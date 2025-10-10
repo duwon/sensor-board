@@ -4,49 +4,90 @@
         uart0 = &uart0;
     };
 
+    /* 원한다면 콘솔 강제 지정 */
+    chosen {
+        zephyr,console = &uart0;
+        zephyr,shell-uart = &uart0;
+    };
+
     zephyr,user {
-        io-int-gpios = <&gpio0 20 GPIO_ACTIVE_LOW>;
-        led0-gpios = <&gpio0 11 GPIO_ACTIVE_HIGH>;
-        btn0-gpios = <&gpio1 9 GPIO_ACTIVE_LOW>;
-        en-sensor-gpios = <&gpio0 30 GPIO_ACTIVE_HIGH>;
-        en-rpu-gpios = <&gpio0 31 GPIO_ACTIVE_HIGH>;
-        soh-alarm-gpios = <&gpio0 9 GPIO_ACTIVE_HIGH>;
-        soh-ok-gpios = <&gpio0 10 GPIO_ACTIVE_HIGH>;
+        io-int-gpios     = <&gpio0 20 GPIO_ACTIVE_LOW>;
+        led0-gpios       = <&gpio0 11 GPIO_ACTIVE_HIGH>;
+        btn0-gpios       = <&gpio1 9 GPIO_ACTIVE_LOW>;
+        en-sensor-gpios  = <&gpio0 30 GPIO_ACTIVE_HIGH>;
+        en-rpu-gpios     = <&gpio0 31 GPIO_ACTIVE_HIGH>;
+        soh-alarm-gpios  = <&gpio0 9 GPIO_ACTIVE_HIGH>;
+        soh-ok-gpios     = <&gpio0 10 GPIO_ACTIVE_HIGH>;
         ntc-ain = <1>; /* SAADC AIN1 = P0.03 */
     };
 };
 
-/* UART0 pinctrl: TX=P0.15, RX=P0.17 (RX는 풀업 권장) */
+/* ===== pinctrl: 기존 보드 노드 제거 후, 새 노드로 지정 ===== */
+&uart0 {
+    status = "okay";
+    current-speed = <115200>;
+    /* HW 플로우컨트롤 사용 안 함 (CTS/RTS 비활성화) */
+    hw-flow-control;
+    /delete-property/ hw-flow-control; /* <- 위 줄을 지우고 이 줄로 '없음' 상태를 확정 */
+
+    /* 기존 보드의 pinctrl 참조 제거 */
+    /delete-property/ pinctrl-0;
+    /delete-property/ pinctrl-1;
+    /delete-property/ pinctrl-names;
+
+    pinctrl-0 = <&uart0_my_default>;
+    pinctrl-1 = <&uart0_my_sleep>;
+    pinctrl-names = "default", "sleep";
+};
+
+/* 기존 보드의 동일 라벨 노드가 있을 수 있으므로, 라벨 이름을 변경 */
 &pinctrl {
-    uart0_default: uart0_default {
+    /* 필요 시 기존 라벨을 지우고 시작해도 됨:
+     * /delete-node/ &uart0_default;
+     * /delete-node/ &uart0_sleep;
+     */
+
+    uart0_my_default: uart0_my_default {
         group1 {
-            psels = <NRF_PSEL(UART_TX, 0, 15)>,
-                    <NRF_PSEL(UART_RX, 0, 17)>;
-            bias-pull-up;
+            psels = <NRF_PSEL(UART_TX, 0, 15)>,   /* TX=P0.15 */
+                    <NRF_PSEL(UART_RX, 0, 17)>;   /* RX=P0.17 */
+            bias-pull-up;                         /* RX 약풀업 */
         };
     };
-    uart0_sleep: uart0_sleep {
+
+    uart0_my_sleep: uart0_my_sleep {
         group1 {
             psels = <NRF_PSEL(UART_TX, 0, 15)>,
                     <NRF_PSEL(UART_RX, 0, 17)>;
             low-power-enable;
         };
     };
-};
 
-&uart0 {
-    status = "okay";
-    current-speed = <115200>;
-    pinctrl-0 = <&uart0_default>;
-    pinctrl-1 = <&uart0_sleep>;
-    pinctrl-names = "default", "sleep";
+    i2c0_default: i2c0_default {
+        group1 {
+            psels = <NRF_PSEL(TWIM_SCL, 0, 5)>,   /* SCL=P0.05 */
+                    <NRF_PSEL(TWIM_SDA, 0, 4)>;   /* SDA=P0.04 */
+            bias-pull-up;
+        };
+    };
+
+    i2c0_sleep: i2c0_sleep {
+        group1 {
+            psels = <NRF_PSEL(TWIM_SCL, 0, 5)>,
+                    <NRF_PSEL(TWIM_SDA, 0, 4)>;
+            low-power-enable;
+        };
+    };
 };
 
 &i2c0 {
     status = "okay";
-    clock-frequency = <I2C_BITRATE_FAST>; /* 400k */
+    clock-frequency = <I2C_BITRATE_FAST>; /* 400 kHz */
+    pinctrl-0 = <&i2c0_default>;
+    pinctrl-1 = <&i2c0_sleep>;
+    pinctrl-names = "default", "sleep";
 };
 
-/* GPIO default states */
+/* GPIO 컨트롤러 켜기 */
 &gpio0 { status = "okay"; };
 &gpio1 { status = "okay"; };

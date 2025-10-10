@@ -4,6 +4,8 @@
 #include <zephyr/drivers/i2c.h>
 #include <zephyr/drivers/adc.h>
 #include <zephyr/kernel.h>
+#include <zephyr/logging/log.h>
+LOG_MODULE_DECLARE(app, LOG_LEVEL_INF);
 
 /* I2C controller */
 static const struct device *i2c0 = DEVICE_DT_GET(DT_NODELABEL(i2c0));

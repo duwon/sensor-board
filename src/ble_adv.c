@@ -105,7 +105,7 @@ int ble_update_and_advertise(const struct dip_bits *dip, const sensor_sample_t *
 
 #if FORCE_LEGACY
     /* =========================
-     * 옵션 A: 레거시 광고 (확실히 보이게)
+     * 옵션 A: 레거시 광고
      * ========================= */
     uint8_t mfg[24]; size_t mfg_len = 0;
     build_legacy_packet(mfg, &mfg_len, smp);
@@ -158,7 +158,7 @@ int ble_update_and_advertise(const struct dip_bits *dip, const sensor_sample_t *
 
 #else
     /* =========================
-     * 옵션 B: 확장 광고 (가시성 강화)
+     * 옵션 B: 확장 광고
      *  - Shortened Local Name 추가
      *  - 필요 시 PHY 명시
      * ========================= */
