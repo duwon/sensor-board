@@ -1,11 +1,14 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
+#include <zephyr/logging/log.h>
 #include "gpio_if.h"
 #include "dip_switch.h"
 #include "ltc3337.h"
 #include "sensors.h"
 #include "ble_adv.h"
+
+LOG_MODULE_REGISTER(app, LOG_LEVEL_INF);
 
 static struct k_work_delayable loop_work;
 static struct dip_bits g_dip;
@@ -36,11 +39,18 @@ static void loop_fn(struct k_work *w)
 	/* BLE advertise */
 	int err = ble_update_and_advertise(&g_dip, &s);
 
-	/* LED 패턴: 성공=0.5s, 실패=0.12s 고속 깜빡임 */
-	led_period_ms = (err == 0) ? 500 : 120;
+	/* -EALREADY, -EINPROGRESS 등 비치명적 상태는 OK로 처리 */
+	bool ok = (err == 0) || (err == -EALREADY) || (err == -EINPROGRESS);
+	led_period_ms = ok ? 500 : 120;
 
 	/* schedule next based on DIP period bit: H=Long(10s), L=Short(5s) */
 	uint32_t next_ms = g_dip.period ? 10000 : 5000;
+
+	/* 진단 로그 */
+	LOG_INF("loop: next=%ums, err=%d, P=%ld x100, T=%d x100, batt=%u%%, DIP{legacy=%u phy=%u period=%u}",
+			next_ms, err, (long)s.p_value_x100, s.temperature_c_x100, s.battery_pc,
+			g_dip.legacy, g_dip.phy, g_dip.period);
+
 	k_work_schedule(&loop_work, K_MSEC(next_ms));
 }
 
