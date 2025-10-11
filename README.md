@@ -1,135 +1,163 @@
-
-
-# 📘 BLE Sensor Board (Broadcaster) 정리 요약
+# 📘 BLE Sensor Board (Broadcaster) 최신 정리 (업데이트)
 
 ## 1️⃣ MCU 및 기본 설정
 
 * **MCU:** nRF52833
-* **클럭:** 외부 HFXO(32 MHz) + LFXO(32.768 kHz) 사용
-* **SDK:** nRF Connect SDK v3.1.0 (Zephyr v4.1.99 기반)
-* **보드:** 커스텀 센서보드 (임시 타깃: `nrf52833dk_nrf52833`)
+* **클럭:** HFXO 32 MHz + LFXO 32.768 kHz
+* **SDK:** nRF Connect SDK v3.1.0 (Zephyr v4.1.99)
+* **보드 타깃:** `nrf52833dk_nrf52833` (커스텀 보드 핀 오버레이 적용)
 
 ---
 
-## 2️⃣ 핀맵 요약
+## 2️⃣ 핀맵 요약 (확정)
 
-| 기능              | 핀             | 방향    | 설명                                 |
-| --------------- | ------------- | ----- | ---------------------------------- |
-| LFXO            | P0.00 / P0.01 | —     | 32.768 kHz 크리스털                    |
-| **I2C_SDA/SCL** | P0.04 / P0.05 | I/O   | I²C Bus0 (센서공통)                    |
-| **UART_TX/RX**  | P0.15 / P0.17 | 출력/입력 | 디버깅용 UART0 (115200 8N1)            |
-| **LED**         | P0.11         | 출력    | 상태 LED (Active High)               |
-| **BTN**         | P1.09         | 입력    | 사용자 버튼 (Active Low)                |
-| **NTC ADC**     | P0.03         | 입력    | SAADC AIN1 (온도센서)                  |
-| **EN_SENSOR**   | P0.30         | 출력    | 센서전원 Enable (High = On)            |
-| **EN_RPU**      | P0.31         | 출력    | RPU전원 Enable (High = On)           |
-| **IO_INT**      | P0.20         | 출력    | 외부 센서 인터럽트 출력 (Active Low, 기본 Low) |
-| **SOH_ALARM**   | P0.09         | 입력    | LTC3337 ALARM (Active High)        |
-| **SOH_OK**      | P0.10         | 입력    | LTC3337 OK (Active High)           |
-| **RESET**       | P0.18         | 입력    | JTAG Reset 핀                       |
+| 기능               | 핀                 | 방향    | 설명                              |
+| ---------------- | ----------------- | ----- | ------------------------------- |
+| LFXO             | P0.00 / P0.01     | —     | 32.768 kHz                      |
+| **I2C SCL/SDA**  | **P0.05 / P0.04** | I/O   | I²C0 (400 kHz, 필요시 100 kHz로 하향) |
+| **UART TX/RX**   | **P0.15 / P0.17** | 출력/입력 | UART0 115200 8N1 (**HWFC 끔**)   |
+| **LED**          | P0.11             | 출력    | 상태 LED (Active High)            |
+| **BTN**          | P1.09             | 입력    | 사용자 버튼 (Active Low)             |
+| **NTC ADC**      | P0.03             | 입력    | SAADC AIN1                      |
+| **EN_SENSOR**    | P0.30             | 출력    | 센서 전원 Enable                    |
+| **EN_RPU**       | P0.31             | 출력    | RPU 전원 Enable (DIP 전원)          |
+| **IO_INT**       | P0.20             | 출력    | 센서 인터럽트                         |
+| **SOH_ALARM/OK** | P0.09 / P0.10     | 입력    | LTC3337 상태                      |
+| **RESET**        | P0.18             | 입력    | JTAG Reset                      |
 
----
-
-## 3️⃣ I²C 버스 연결 구조
-
-**I2C0 (P0.04 / P0.05)** 에 다음 4개 디바이스가 연결됨:
-
-| 디바이스                   | 주소        | 역할                                    |
-| ---------------------- | --------- | ------------------------------------- |
-| **TCA9534**            | 0x20      | DIP 스위치 입력 (I/O Expander)             |
-| **LTC3337**            | 0x64 (예정) | 배터리 SOH 모니터 (Alarm/OK 핀 P0.09/10 연결)  |
-| **LSM6DSO**            | 0x6A      | 가속도계 (2-wire I²C Only)                |
-| **Honeywell SSC 압력센서** | 0x28      | 6 종 중 1 개 장착 (010BA/100MD/002ND 중 선택) |
+> **주의(하드 이슈 기록):** 압력센서(0x28)가 I²C 라인을 1.8 V로 끌어내리던 문제 발견. 제거 시 3 V 정상화 및 0x20(TCA9534), 0x6A(LSM6DSO) 응답 확인. 0x28 사용 시 **3 V 통일** 또는 **양방향 I²C 레벨시프터** 필요.
 
 ---
 
-## 4️⃣ DIP 스위치 비트 정의 ( TCA9534 )
+## 3️⃣ I²C 버스 구성
 
-| 비트    | 의미             | 1 (H)       | 0 (L)         |
-| ----- | -------------- | ----------- | ------------- |
-| [2:0] | Model(Main)    | 모델 선택 비트    | —             |
-| [3]   | Mode(Sub)      | Sub Mode On | Off           |
-| [4]   | PHY            | 1 Mbps      | Coded PHY S=8 |
-| [5]   | Period         | Long        | Short         |
-| [6]   | PWR            | Battery     | Adapter       |
-| [7]   | Legacy Support | New 패킷      | Legacy 패킷     |
+| 디바이스              | 주소       | 역할                        |
+| ----------------- | -------- | ------------------------- |
+| **TCA9534**       | 0x20     | DIP 스위치 입력 (I/O Expander) |
+| **LTC3337**       | 0x64(예정) | 배터리 SOH                   |
+| **LSM6DSO**       | 0x6A     | IMU                       |
+| **Honeywell SSC** | 0x28     | 압력센서(모델 가변, **전압 유의**)    |
 
 ---
 
-## 5️⃣ GPIO 기본 동작
+## 4️⃣ DIP 스위치 정의 (TCA9534)
 
-* `EN_SENSOR`, `EN_RPU` → 부팅 시 자동 High 출력 (GPIO hog)
-* `IO_INT` → 기본 Low (필요시 펄스 출력 가능)
-* `LED` → Active High 출력, `BTN` → Active Low 입력
-* `SOH_ALARM`, `SOH_OK` → Active High 입력
-* NTC → AIN1( P0.03 ) ADC 입력
+| 비트    | 의미          | 1(H)       | 0(L)       |
+| ----- | ----------- | ---------- | ---------- |
+| [2:0] | Model(Main) | 모델 선택      | —          |
+| [3]   | Mode(Sub)   | On         | Off        |
+| [4]   | PHY         | 1 Mbps     | Coded S=8  |
+| [5]   | Period      | Long(10 s) | Short(5 s) |
+| [6]   | PWR         | Battery    | Adapter    |
+| [7]   | Legacy      | New 패킷     | Legacy 패킷  |
 
 ---
 
-## 6️⃣ 프로젝트 구조 ( sensor_board_fw.zip )
+## 5️⃣ DeviceTree 오버레이 핵심
+
+* **UART0**: TX=P0.15, RX=P0.17, **hw-flow-control 속성 제거**
+* **I2C0**: SCL=P0.05, SDA=P0.04, 기본 **Fast(400 kHz)**
+* pinctrl 라벨 충돌 방지 위해 `uart0_my_default/sleep` 사용, `&uart0`의 `pinctrl-0/1`로 **명시 교체**
+* (선택) `chosen { zephyr,console = &uart0; zephyr,shell-uart = &uart0; }`
+
+---
+
+## 6️⃣ Kconfig (prj.conf) 핵심
+
+```conf
+# UART/Console
+CONFIG_SERIAL=y
+CONFIG_UART_CONSOLE=y
+CONFIG_PRINTK=y
+CONFIG_CONSOLE=y
+CONFIG_UART_0_NRF_HWFC=n   # HWFC 끔
+
+# Shell
+CONFIG_SHELL=y
+CONFIG_SHELL_BACKEND_SERIAL=y
+CONFIG_SHELL_STACK_SIZE=4096
+
+# Logging
+CONFIG_LOG=y
+CONFIG_LOG_DEFAULT_LEVEL=3
+CONFIG_LOG_RUNTIME_FILTERING=y
+CONFIG_LOG_PROCESS_THREAD_STACK_SIZE=2048
+```
+
+---
+
+## 7️⃣ 프로젝트 구조 (업데이트)
 
 ```
 sensor_board_fw/
 ├── boards/
-│   └── nrf52833dk_nrf52833.overlay    ← 실보드 핀매핑
+│   └── nrf52833dk_nrf52833.overlay        # 확정 핀매핑(USB-UART RX=0.17)
+├── include/
+│   └── debug.h, dip_switch.h, ...
 ├── src/
-│   ├── gpio_if.c      ← LED/BTN/IO_INT/SOH GPIO 제어
-│   ├── dip_switch.c   ← TCA9534 DIP 읽기 및 비트 해석
-│   └── main.c         ← (아직 작성 예정) 센서 루프 + BLE 광고
-├── prj.conf           ← 모듈 및 로그 설정
-└── CMakeLists.txt     ← Zephyr 빌드 설정
+│   ├── main.c                             # 센서 루프 + BLE 광고 + LED HB + 로그스위치
+│   ├── gpio_if.c                          # LED/BTN/IO_INT/SOH
+│   ├── dip_switch.c                       # (통합) Get_Switch() + 파싱
+│   ├── sensors.c                          # 센서 초기화/샘플 (진행중)
+│   ├── ltc3337.c                          # SOH(진행중)
+│   ├── ble_adv.c                          # EXT Adv 기본, Legacy 옵션
+│   └── debug.c                            # 쉘 명령(diag …), I2C 스캔/IMU/DIP/로그 on/off
+├── prj.conf
+└── CMakeLists.txt
 ```
 
 ---
 
-## 7️⃣ 소프트웨어 기능 (현재까지 구현)
+## 8️⃣ 구현 현황 (오늘 반영 포함)
 
-* ✅ GPIO 초기화 및 제어 (`board_gpio_init`, `io_int_pulse_us`)
-* ✅ DIP 스위치 읽기 (`dip_read_u8`) + 비트 해석 (`parse_dip`)
-* ✅ I²C 기반 디바이스 바인딩 (압력센서, IMU, LTC3337 , TCA9534)
-* ✅ ADC 채널 활성화 (NTC 센서)
-* ✅ UART0 디버깅 콘솔 (115200 8N1)
-* 🕒 다음 단계 : 센서 데이터 수집 루프 및 BLE 광고 (레거시 → 확장 전환)
+* ✅ **UART RX 문제 해결**: pinctrl 재정의, HWFC 비활성.
+* ✅ **Shell 모드 정상화**: `diag` 명령 사용 가능.
+* ✅ **디버그 쉘 명령**
+
+  * `diag echo <text…>`: UART RX 에코
+  * `diag i2c-scan`: 0x03–0x77 스캔
+  * `diag imu-who`: LSM6DSO WHO_AM_I 확인
+  * `diag dip-read`: EN_RPU on → TCA9534 입력 읽기/파싱
+  * `diag log [on|off]`: **주기 로그 on/off 스위치**
+* ✅ **DIP 읽기 절차 통합**: `dip_switch.c` 안에 `Get_Switch()` 포함(EN_RPU on → 2회 읽기 디바운스 → 파싱)
+* ✅ **LED Heartbeat**: ok=0.5 s 토글, 에러=120 ms 토글
+* ✅ **메인 루프**: DIP period(5 s/10 s)로 주기 스케줄, 광고 페이로드 갱신 로그
+* ✅ **BLE 광고**: 확장 광고(Non-connectable) 100 ms, payload 업데이트 로그. 스캐너에서 보이도록 개선(필드 구성 정리됨)
 
 ---
 
-## 8️⃣ 다음 할 일
+## 9️⃣ 빌드/플래시 & 런북
 
-1. `sensors.c` 작성 → 압력(SSC 0x28), NTC, LSM6DSO, LTC3337 데이터 수집 함수 구현
-2. `main.c` 작성 → 센서 루프 + BLE 레거시 광고 10 초 주기 갱신
-3. DIP 비트 [4] PHY, [7] Legacy 에 따라 확장 광고 38B 전환 로직 추가
-4. LTC3337 데이터시트 기반 SOH 상태 레지스터 해석 및 전송 필드 정의
+```bash
+# 클린 빌드 권장
+west build -b nrf52833dk_nrf52833 . --domain sensor-board -p
+west flash
+```
 
+터미널(115200 8N1, flow=OFF, CR 또는 CR+LF):
 
+```
+uart:~$ help
+uart:~$ diag dip-read
+uart:~$ diag i2c-scan
+uart:~$ diag log off   # 루프 로그 정지
+uart:~$ diag log on    # 루프 로그 재개
+```
 
+---
 
+## 🔟 내일 진행할 “바로 다음” 작업
 
-### 🔧 다음 개발 연속 작업
+1. **sensors.c 마무리**
 
-#### 1️⃣ `sensors.c`
+   * 압력(0x28) 복귀 전략: 3 V 통일 또는 레벨시프터 경유 시퀀스 반영
+   * NTC 변환(B=3435) 함수 적용, 온도/압력 평균화(윈저라이즈드)
+   * LSM6DSO 기본 init + Acc 3축 샘플(저속)
+2. **LTC3337 SOH 읽기**: OK/ALARM 핀 반영 + I²C 레지스터 맵 정의/적용
+3. **BLE 패킷 포맷 확정**
 
-* **압력센서 (I2C 0x28)** : `SSCDJNN010BA2A3 / 100MD / 002ND`
-* **온도센서 (NTC)** : `ADC AIN1`
-* **IMU (LSM6DSO, 0x6A)** : 가속도 3축
-* **LTC3337 (0x64)** : SOH 레지스터 읽기
-* 모든 센서는 Sleep → Wake 시 전원 Enable → 초기화 후 평균 샘플 계산
-
-#### 2️⃣ `main.c`
-
-* DIP 스위치 해석 결과로 BLE 광고 모드 전환
-  (`[7] Legacy Support`, `[4] PHY`, `[5] Period` 등)
-* 10초 주기 센싱 루프 + BLE 광고 데이터 업데이트
-* LTC3337 배터리 SOH → BLE 패킷 필드 반영
-
-#### 3️⃣ BLE 패킷 포맷
-
-* **기본(신형)** : 확장 광고 38 B
-* **호환(구형)** : 레거시 광고 23 B
-* 구조는 개발사양서 § 2.4.1 기준 (Index 9–37 구간)
-
-#### 4️⃣ 캘리브레이션 및 평균화
-
-* 압력: offset 보정 + 윈저라이즈드 평균
-* NTC: B3435 변환식
-* 진동: FIFO 기반 RMS/Peak 계산 루틴 (후속 단계에서 확장 가능)
+   * 기본 38 B(신형), `DIP[7]=1`일 때 Legacy 23 B
+   * `DIP[4]`에 따라 1 Mbps vs Coded S=8 선택 적용
+4. **옵션 B(스캐너 호환 개선)**: 스캐너 인식률 저하 시 Legacy + Flags-only AD fallback 스위치 추가
+5. (선택) **diag 확장**: `diag ble start/stop`, `diag phy 1m|coded`, `diag period 5|10` 등
 

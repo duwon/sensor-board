@@ -12,4 +12,5 @@ target_sources(app PRIVATE
   src/sensors.c
   src/ble_adv.c
   src/debug.c
+  src/sleep_if.c
 )
