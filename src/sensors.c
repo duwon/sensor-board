@@ -30,10 +30,12 @@ static struct adc_sequence seq = {
 /* Pressure sensor 0x28 (SSC) simple read */
 int read_pressure_0x28(sensor_sample_t *out)
 {
-    if (!device_is_ready(i2c0)) return -ENODEV;
+    if (!device_is_ready(i2c0))
+        return -ENODEV;
     uint8_t buf[4] = {0};
     int r = i2c_read(i2c0, buf, sizeof(buf), 0x28);
-    if (r) return r;
+    if (r)
+        return r;
     uint16_t bridge = ((buf[0] & 0x3F) << 8) | buf[1];
     const int OUTPUT_MIN = 1638, OUTPUT_MAX = 14745;
     const int P_MIN = -1020, P_MAX = 1020;
@@ -48,10 +50,12 @@ int read_pressure_0x28(sensor_sample_t *out)
 
 int read_ntc_ain1_cx100(int16_t *cx100)
 {
-    if (!device_is_ready(adc_dev)) return -ENODEV;
+    if (!device_is_ready(adc_dev))
+        return -ENODEV;
     adc_channel_setup(adc_dev, &ch_cfg);
     int r = adc_read(adc_dev, &seq);
-    if (r) return r;
+    if (r)
+        return r;
     float adc_norm = (float)adc_buf / 4095.0f;
     float v = adc_norm * 0.6f;
     float temp_c = 25.0f + (v - 0.5f) * 100.0f;
@@ -59,8 +63,11 @@ int read_ntc_ain1_cx100(int16_t *cx100)
     return 0;
 }
 
-int sensors_init(void){
-    if (!device_is_ready(i2c0)) return -ENODEV;
-    if (!device_is_ready(adc_dev)) return -ENODEV;
+int sensors_init(void)
+{
+    if (!device_is_ready(i2c0))
+        return -ENODEV;
+    if (!device_is_ready(adc_dev))
+        return -ENODEV;
     return 0;
 }
