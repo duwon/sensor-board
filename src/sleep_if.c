@@ -16,7 +16,7 @@ int Start_Sleep(uint32_t seconds)
     power_rpu(false);
 
     /* 2) 현재 모드(레거시/EXT)에 맞춰 광고 정지 */
-    (void)Ble_Stop();
+    
 
     LOG_INF("Enter sleep ~%us", seconds);
 
@@ -35,14 +35,7 @@ int Wakeup(void)
     power_sensor(true);
     k_sleep(K_MSEC(5));     // 센서 안정화
 
-    /* 2) 마지막 BLE 설정 재적용(광고 시작은 Tx_Ble가 담당) */
-    const ble_cfg_t *last = ble_get_last_cfg();
-    if (last) {
-        int err = Init_Ble(last);
-        if (err) {
-            LOG_ERR("Init_Ble re-apply failed: %d", err);
-        }
-    }
+
 
     LOG_INF("Woken up, interfaces re-enabled");
     return 0;

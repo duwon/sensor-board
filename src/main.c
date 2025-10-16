@@ -9,10 +9,9 @@
 #include "ble_adv.h"
 #include "debug.h"
 #include "app_diag.h"
+#include "sleep_if.h"
 
 LOG_MODULE_REGISTER(app, LOG_LEVEL_INF);
-
-static uint32_t g_adv_itvl_ms = 0; // 현재 적용된 광고 인터벌(ms) 캐시
 
 /* 진단 로그 스위치 */
 static atomic_t g_diag_log_on = ATOMIC_INIT(1);
@@ -108,9 +107,7 @@ int main(void)
 	ltc3337_init();
 
 	/* BLE 초기화 + 인터벌 설정 (레거시 비연결 전용) */
-	ble_init();
-	ble_cfg_t c = {.interval_ms = g_dip.period ? 10000 : 5000}; /* 부팅 초기 인터벌: 10s/5s */
-	Init_Ble(&c);
+	Init_Ble();
 
 	/* 디버깅 코드 */
 	debug_run_startup();

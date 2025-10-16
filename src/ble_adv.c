@@ -7,168 +7,97 @@
 
 LOG_MODULE_REGISTER(ble_adv, LOG_LEVEL_INF);
 
-/* 내부 상태 */
-static bool legacy_started;
-static ble_cfg_t g_last_cfg;
-const ble_cfg_t *ble_get_last_cfg(void) { return &g_last_cfg; }
+/* ===================== 내부 설정 ===================== */
+/* 확장 광고 파라미터: 비연결/비스캔, 공용 주소 사용, 1M PHY */
+#define ADV_ONE_SHOT_MS   150    /* "1회 전송" 유사 동작 위해 매우 짧게 광고 */
+#define ADV_INT_MIN_100MS 0x00A0  /* 0x00A0 * 0.625ms = 100ms */
+#define ADV_INT_MAX_100MS 0x00A0
 
-/* appearance: Generic Sensor(0x0340) — 스캐너에 Device type 노출용 */
-static const uint16_t k_gap_appearance = 0x0340;
+static struct bt_le_ext_adv *s_ext_adv;
 
-/* ---------- 고정 MAC(Identity) 저장/복원 ---------- */
-static bt_addr_le_t g_locked_id;
-static bool g_addr_loaded;
+/* 확장 광고 파라미터 (Zephyr 4.1.99 / NCS 3.1.0 호환) */
+static const struct bt_le_adv_param ext_adv_param = {
+    .id = BT_ID_DEFAULT,
+    .sid = 0, /* 0~15, 여기선 0 사용 */
+    .secondary_max_skip = 0,
+    .options = (BT_LE_ADV_OPT_EXT_ADV | BT_LE_ADV_OPT_USE_IDENTITY |
+                BT_LE_ADV_OPT_USE_TX_POWER | BT_LE_ADV_OPT_NO_2M),
+    .interval_min = ADV_INT_MIN_100MS,
+    .interval_max = ADV_INT_MAX_100MS,
+    .peer = NULL,
+};
 
-static int settings_ble_id_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
-{
-    if (strcmp(name, "ble_id") != 0)
-        return -ENOENT;
-    uint8_t buf[7];
-    int rc = read_cb(cb_arg, buf, MIN(len, sizeof(buf)));
-    if (rc <= 0)
-        return rc ? rc : -EINVAL;
-    g_locked_id.type = buf[0];
-    memcpy(g_locked_id.a.val, &buf[1], 6);
-    g_addr_loaded = true;
-    return 0;
-}
-SETTINGS_STATIC_HANDLER_DEFINE(app, "app", NULL, settings_ble_id_set, NULL, NULL);
-
-static void store_ble_id(const bt_addr_le_t *id)
-{
-    uint8_t buf[7];
-    buf[0] = id->type;
-    memcpy(&buf[1], id->a.val, 6);
-    (void)settings_save_one("app/ble_id", buf, sizeof(buf));
-}
-
-static void log_identity_addr(void)
-{
-    bt_addr_le_t addrs[CONFIG_BT_ID_MAX];
-    size_t cnt = ARRAY_SIZE(addrs);
-    bt_id_get(addrs, &cnt);
-    for (size_t i = 0; i < cnt; i++)
-    {
-        char s[BT_ADDR_LE_STR_LEN];
-        bt_addr_le_to_str(&addrs[i], s, sizeof(s));
-        LOG_INF("BT ID[%u] %s", (unsigned)i, s);
-    }
-}
-
-/* ---------- API 구현 ---------- */
-int ble_init(void)
+/* ===================== API 구현 ===================== */
+int Init_Ble(void)
 {
     int err = bt_enable(NULL);
-    if (err)
-    {
-        LOG_ERR("bt_enable: %d", err);
+    if (err) {
+        printk("bt_enable failed (%d)\n", err);
         return err;
     }
 
-    (void)settings_load(); /* app/ble_id 로드 시도 */
-
-    /* 첫 부팅이면 현재 ID0를 저장 → 이후에는 항상 동일 주소 사용 */
-    bt_addr_le_t cur;
-    size_t cnt = 1;
-    bt_id_get(&cur, &cnt);
-    if (!g_addr_loaded)
-    {
-        g_locked_id = cur; /* 보통 static random */
-        store_ble_id(&g_locked_id);
-        g_addr_loaded = true;
-        LOG_INF("First boot: persist current ID0");
+    /* 확장 광고 세트 생성 (Non-connectable, Non-scannable) */
+    struct bt_le_ext_adv *adv = NULL;
+    err = bt_le_ext_adv_create(&ext_adv_param, NULL, &adv);
+    if (err) {
+        printk("bt_le_ext_adv_create failed (%d)\n", err);
+        return err;
     }
+    s_ext_adv = adv;
 
-    /* 광고/연결 시작 전에 ID0를 고정 주소로 reset */
-    err = bt_id_reset(0, &g_locked_id, NULL);
-    if (err)
-    {
-        LOG_WRN("bt_id_reset failed: %d (continue)", err);
-    }
-
-    log_identity_addr();
-    LOG_INF("BLE init OK");
+    printk("BLE initialized. Device name: %s\n", CONFIG_BT_DEVICE_NAME);
     return 0;
 }
 
-/* 설정만 반영(레거시 비연결 광고 고정, 시작은 Tx_Ble가 담당) */
-int Init_Ble(const ble_cfg_t *cfg)
-{
-    if (!cfg)
-        return -EINVAL;
-
-    g_last_cfg = *cfg;
-
-    /* 현재 레거시 광고만 정지(EXT 미사용) */
-    if (legacy_started)
-    {
-        (void)bt_le_adv_stop();
-        legacy_started = false;
-    }
-
-    LOG_INF("Init_Ble: interval=%ums (legacy, non-connectable)", g_last_cfg.interval_ms);
-    return 0;
-}
-
-/* 브로드캐스트 시작/갱신 — 기본 패킷만 (Flags + Appearance + Manufacturer) */
+/* 확장 광고 한 번 짧게 켰다가 끄는 방식으로 "1회 전송" 유사 동작 수행
+ * 주의: 확장 광고에서는 일반적으로 Flags AD를 포함하지 않습니다.
+ * 데이터는 Manufacturer Specific Data(0xFF) 단일 AD 블록만 넣습니다.
+ */
 int Tx_Ble(const uint8_t *mfg, size_t mfg_len)
 {
-    if (!mfg || !mfg_len)
+    if (!mfg || mfg_len == 0) {
         return -EINVAL;
+    }
+    if (!s_ext_adv) {
+        return -EIO;
+    }
 
-    const uint8_t flags = BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR;
-    struct bt_data ad[] = {
-        BT_DATA(BT_DATA_FLAGS, &flags, sizeof(flags)),
-        BT_DATA(BT_DATA_GAP_APPEARANCE, (const uint8_t *)&k_gap_appearance, sizeof(k_gap_appearance)),
-        BT_DATA(BT_DATA_MANUFACTURER_DATA, mfg, mfg_len),
+    /* AD 구성: Manufacturer Specific Data 하나만 */
+    struct bt_data ad = {
+        .type = BT_DATA_MANUFACTURER_DATA, /* 0xFF */
+        .data_len = (uint8_t)mfg_len,
+        .data = mfg,
     };
 
-    /* 레거시, non-connectable, non-scannable */
-    struct bt_le_adv_param p = BT_LE_ADV_PARAM_INIT(
-        0 /* no connectable, no use_name */,
-        ble_to_0p625(g_last_cfg.interval_ms),
-        ble_to_0p625(g_last_cfg.interval_ms),
-        NULL);
+    int err = bt_le_ext_adv_set_data(s_ext_adv, &ad, 1, NULL, 0);
+    if (err) {
+        printk("bt_le_ext_adv_set_data failed (%d)\n", err);
+        return err;
+    }
 
-    int err;
-    if (!legacy_started)
-    {
-        err = bt_le_adv_start(&p, ad, ARRAY_SIZE(ad), NULL, 0);
-        if (err == -EALREADY)
-        {
-            /* 이미 실행 중이면 데이터 갱신 */
-            err = bt_le_adv_update_data(ad, ARRAY_SIZE(ad), NULL, 0);
-        }
-        if (err)
-        {
-            LOG_ERR("legacy adv start/update: %d", err);
-            return err;
-        }
-        legacy_started = true;
-        LOG_INF("Advertising started (legacy, %ums)", g_last_cfg.interval_ms);
-    }
-    else
-    {
-        err = bt_le_adv_update_data(ad, ARRAY_SIZE(ad), NULL, 0);
-        if (err)
-        {
-            LOG_ERR("legacy adv update: %d", err);
-            return err;
-        }
-        LOG_INF("Advertising payload updated");
-    }
-    return 0;
-}
+    /* 비연결/비스캔 광고 시작 */
+    struct bt_le_ext_adv_start_param start = {
+        .timeout = 0,    /* Host 타임아웃 사용 안 함 (우리가 직접 끔) */
+        .num_events = 0, /* 제한 없음 */
+    };
 
-int Ble_Stop(void)
-{
-    if (legacy_started)
-    {
-        int err = bt_le_adv_stop();
-        if (err)
-            return err;
-        legacy_started = false;
-        LOG_INF("Advertising stopped");
+    err = bt_le_ext_adv_start(s_ext_adv, &start);
+    if (err) {
+        printk("bt_le_ext_adv_start failed (%d)\n", err);
+        return err;
     }
+
+    /* 아주 짧은 시간만 송출 */
+    k_msleep(ADV_ONE_SHOT_MS);
+
+    /* 광고 중지 */
+    err = bt_le_ext_adv_stop(s_ext_adv);
+    if (err) {
+        printk("bt_le_ext_adv_stop failed (%d)\n", err);
+        return err;
+    }
+
+    printk("EXT ADV burst done (%u ms, MFG %u bytes)\n",
+           (unsigned)ADV_ONE_SHOT_MS, (unsigned)mfg_len);
     return 0;
 }

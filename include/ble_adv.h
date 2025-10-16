@@ -22,9 +22,7 @@ static inline uint16_t ble_to_0p625(uint32_t ms)
 }
 
 /* API */
-int ble_init(void);                             /* 스택/고정 MAC 초기화 */
-int Init_Ble(const ble_cfg_t *cfg);             /* 인터벌 반영(시작/중지는 아님) */
+int Init_Ble(void);                 
 int Tx_Ble(const uint8_t *mfg, size_t mfg_len); /* 브로드캐스트 시작/갱신 */
-int Ble_Stop(void);                             /* 광고 중지 */
 
 const ble_cfg_t *ble_get_last_cfg(void);
