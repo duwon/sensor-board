@@ -162,23 +162,27 @@ static int cmd_log_sw(const struct shell *sh, size_t argc, char **argv)
 /* --- NTC 온도 읽기 커맨드 ---------------------------------------- */
 static int cmd_ntc(const struct shell *sh, size_t argc, char **argv)
 {
-    ARG_UNUSED(argc);
-    ARG_UNUSED(argv);
+    ARG_UNUSED(argc); ARG_UNUSED(argv);
 
-    int16_t cx100 = 0;
-    int rc = read_ntc_ain1_cx100(&cx100);
-    if (rc)
-    {
+    int16_t vdd_mv = 0;
+    int16_t cx100  = 0;
+
+    int rc = read_vdd_mv(&vdd_mv);
+    if (rc) {
+        shell_error(sh, "VDD read failed: %d", rc);
+        return rc;
+    }
+    rc = read_ntc_ain1_cx100(&cx100);
+    if (rc) {
         shell_error(sh, "NTC read failed: %d", rc);
         return rc;
     }
 
-    /* 부호 및 두 자리 소수 출력 */
-    int16_t abs_cx100 = (cx100 < 0) ? -cx100 : cx100;
-    shell_print(sh, "NTC temperature: %s%d.%02d °C",
+    int16_t abs_cx = (cx100 < 0) ? -cx100 : cx100;
+    shell_print(sh, "VDD=%d mV, NTC=%s%d.%02d °C",
+                vdd_mv,
                 (cx100 < 0) ? "-" : "",
-                abs_cx100 / 100,
-                abs_cx100 % 100);
+                abs_cx / 100, abs_cx % 100);
     return 0;
 }
 
