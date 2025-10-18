@@ -17,10 +17,10 @@ struct board_gpio {
 int board_gpio_init(void);
 const struct board_gpio* board_gpio_get(void);
 
-void board_led_set(bool on);
+int board_led_set(bool on);
 bool board_btn_get(void);
 void io_int_pulse_us(uint32_t usec);
-void power_sensor(bool on);
-void power_rpu(bool on);
+int power_sensor(bool on);
+int power_rpu(bool on);
 bool soh_alarm_get(void);
 bool soh_ok_get(void);

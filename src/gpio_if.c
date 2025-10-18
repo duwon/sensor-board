@@ -31,14 +31,14 @@ int board_gpio_init(void)
 
 const struct board_gpio* board_gpio_get(void){ return &g_cfg; }
 
-void board_led_set(bool on) { gpio_pin_set_dt(&g_cfg.led, on); }
+int board_led_set(bool on) { return gpio_pin_set_dt(&g_cfg.led, on); }
 bool board_btn_get(void) { return !gpio_pin_get_dt(&g_cfg.btn); } /* active low */
 void io_int_pulse_us(uint32_t usec){
     gpio_pin_set_dt(&g_cfg.io_int, 0);
     k_busy_wait(usec);
     gpio_pin_set_dt(&g_cfg.io_int, 1);
 }
-void power_sensor(bool on){ gpio_pin_set_dt(&g_cfg.en_sensor, on); }
-void power_rpu(bool on){ gpio_pin_set_dt(&g_cfg.en_rpu, on); }
+int power_sensor(bool on){ return gpio_pin_set_dt(&g_cfg.en_sensor, on); }
+int power_rpu(bool on){ return gpio_pin_set_dt(&g_cfg.en_rpu, on); }
 bool soh_alarm_get(void){ return gpio_pin_get_dt(&g_cfg.soh_alarm); }
 bool soh_ok_get(void){ return gpio_pin_get_dt(&g_cfg.soh_ok); }

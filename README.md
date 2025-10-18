@@ -297,3 +297,116 @@ NTC temperature: 29.84 °C
 | 센서 통합     | 압력 / NTC / SOH → 평균값 계산 및 BLE 패킷 필드 반영                |
 
 ---
+
+##  GPIO Shell 테스트 가이드 (`diag gpio`)
+
+###  개요
+
+`diag gpio` 명령은 **BLE Sensor Board (Broadcaster)** 의 주요 전원 및 제어 라인을 UART Shell을 통해 직접 제어하기 위한 디버그 인터페이스
+
+이 기능은 **센서 디버깅 모드**, **전원 시퀀스 검증**, **LED 상태 확인** 등을 펌웨어 수정 없이 UART 콘솔에서 바로 수행할 수 있도록 설계되었다.
+
+---
+
+###  제어 대상 요약
+
+| 대상                | 핀(Pin) | 방향 | 설명              | Active    |
+| ----------------- | ------ | -- | --------------- | --------- |
+| **RPU Enable**    | P0.31  | 출력 | RPU / DIP 전원 제어 | High = ON |
+| **Sensor Enable** | P0.30  | 출력 | 센서 전원 제어        | High = ON |
+| **LED**           | P0.11  | 출력 | 상태 표시 LED       | High = ON |
+
+> 모든 라인은 `gpio_if.c` 에서 **GPIO_OUTPUT_INACTIVE (OFF)** 로 초기화됩니다.
+> 따라서 전원 인가 후에는 기본적으로 모든 출력이 **OFF 상태**입니다.
+
+---
+
+###  명령 구조
+
+```
+diag gpio <target> <action>
+```
+
+| 항목         | 설명                       |
+| ---------- | ------------------------ |
+| `<target>` | `rpu` / `sensor` / `led` |
+| `<action>` | `on` / `off`             |
+
+---
+
+###  테스트 절차
+
+#### 1 기본 확인
+
+1. 전원을 넣고 UART 콘솔(115200 8N1) 연결
+2. `gpio_if_init()`가 정상 초기화되면 로그에 다음이 표시됩니다:
+
+   ```
+   <inf> gpio_if: gpio_if ready: RPU P0.31, SEN P0.30, LED P0.11
+   ```
+
+---
+
+#### 2 RPU 전원 제어 테스트
+
+| 명령                  | 설명        | 기대 결과                         |
+| ------------------- | --------- | ----------------------------- |
+| `diag gpio rpu on`  | RPU 전원 인가 | RPU 보드 구동, 전류 증가 또는 외부 LED ON |
+| `diag gpio rpu off` | RPU 전원 차단 | 전류 감소, 보드 전원 꺼짐 확인            |
+
+UART 로그 예시:
+
+```
+uart:~$ diag gpio rpu on
+gpio rpu on: OK
+```
+
+---
+
+#### 3 Sensor 전원 제어 테스트
+
+| 명령                     | 설명       | 기대 결과                   |
+| ---------------------- | -------- | ----------------------- |
+| `diag gpio sensor on`  | 센서 전원 인가 | 센서(I²C, IMU 등) 정상 응답 시작 |
+| `diag gpio sensor off` | 센서 전원 차단 | I²C 스캔 시 응답 사라짐         |
+
+예시:
+
+```
+uart:~$ diag gpio sensor on
+gpio sensor on: OK
+
+uart:~$ diag i2c-scan
+0x20 0x6A
+```
+
+---
+
+#### 4 LED 제어 테스트
+
+| 명령                  | 설명        | 기대 결과  |
+| ------------------- | --------- | ------ |
+| `diag gpio led on`  | 상태 LED 켜기 | LED 점등 |
+| `diag gpio led off` | 상태 LED 끄기 | LED 소등 |
+
+예시:
+
+```
+uart:~$ diag gpio led on
+gpio led on: OK
+```
+
+---
+
+#### 5️⃣ 전체 시퀀스 예시
+
+아래는 **센서 디버깅용 시퀀스 예시**입니다.
+
+```
+uart:~$ diag ble stop        # BLE 비활성화 (라디오 트래픽 차단)
+uart:~$ diag gpio rpu on     # RPU 전원 인가
+uart:~$ diag gpio sensor on  # 센서 전원 인가
+uart:~$ diag gpio led on     # 상태 LED ON
+uart:~$ diag i2c-scan        # I²C 장치 응답 확인
+uart:~$ diag ntc             # NTC 온도 확인
+```

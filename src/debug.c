@@ -7,6 +7,7 @@
 #include "dip_switch.h" /* Get_Switch() */
 #include "ble_adv.h"
 #include "sensors.h"
+#include "gpio_if.h"
 
 LOG_MODULE_REGISTER(app_dbg, LOG_LEVEL_INF);
 
@@ -239,15 +240,105 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_ble,
                                SHELL_CMD(status, NULL, "Show BLE advertising status.", cmd_ble_status),
                                SHELL_SUBCMD_SET_END);
 
+/* --- GPIO 제어 커맨드 ---------------------------------------- */
+static int do_set(const struct shell *shell, const char *target, bool on)
+{
+    int rc = -EINVAL;
+
+    if (!strcmp(target, "rpu"))
+    {
+        rc = power_rpu(on);
+    }
+    else if (!strcmp(target, "sensor"))
+    {
+        rc = power_sensor(on);
+    }
+    else if (!strcmp(target, "led"))
+    {
+        rc = board_led_set(on);
+    }
+
+    if (rc == 0)
+    {
+        shell_print(shell, "gpio %s %s: OK", target, on ? "on" : "off");
+    }
+    else
+    {
+        shell_error(shell, "gpio %s %s: err=%d", target, on ? "on" : "off", rc);
+    }
+    return rc;
+}
+
+/* 개별 커맨드 */
+static int cmd_gpio_rpu_on(const struct shell *sh, size_t a, char **v)
+{
+    ARG_UNUSED(a);
+    ARG_UNUSED(v);
+    return do_set(sh, "rpu", true);
+}
+static int cmd_gpio_rpu_off(const struct shell *sh, size_t a, char **v)
+{
+    ARG_UNUSED(a);
+    ARG_UNUSED(v);
+    return do_set(sh, "rpu", false);
+}
+static int cmd_gpio_sen_on(const struct shell *sh, size_t a, char **v)
+{
+    ARG_UNUSED(a);
+    ARG_UNUSED(v);
+    return do_set(sh, "sensor", true);
+}
+static int cmd_gpio_sen_off(const struct shell *sh, size_t a, char **v)
+{
+    ARG_UNUSED(a);
+    ARG_UNUSED(v);
+    return do_set(sh, "sensor", false);
+}
+static int cmd_gpio_led_on(const struct shell *sh, size_t a, char **v)
+{
+    ARG_UNUSED(a);
+    ARG_UNUSED(v);
+    return do_set(sh, "led", true);
+}
+static int cmd_gpio_led_off(const struct shell *sh, size_t a, char **v)
+{
+    ARG_UNUSED(a);
+    ARG_UNUSED(v);
+    return do_set(sh, "led", false);
+}
+
+/* 서브커맨드 트리 구성 */
+SHELL_STATIC_SUBCMD_SET_CREATE(sub_gpio_rpu,
+                               SHELL_CMD(on, NULL, "diag gpio rpu on", cmd_gpio_rpu_on),
+                               SHELL_CMD(off, NULL, "diag gpio rpu off", cmd_gpio_rpu_off),
+                               SHELL_SUBCMD_SET_END);
+
+SHELL_STATIC_SUBCMD_SET_CREATE(sub_gpio_sensor,
+                               SHELL_CMD(on, NULL, "diag gpio sensor on", cmd_gpio_sen_on),
+                               SHELL_CMD(off, NULL, "diag gpio sensor off", cmd_gpio_sen_off),
+                               SHELL_SUBCMD_SET_END);
+
+SHELL_STATIC_SUBCMD_SET_CREATE(sub_gpio_led,
+                               SHELL_CMD(on, NULL, "diag gpio led on", cmd_gpio_led_on),
+                               SHELL_CMD(off, NULL, "diag gpio led off", cmd_gpio_led_off),
+                               SHELL_SUBCMD_SET_END);
+
+SHELL_STATIC_SUBCMD_SET_CREATE(sub_gpio_root,
+                               SHELL_CMD(rpu, &sub_gpio_rpu, "RPU power enable", NULL),
+                               SHELL_CMD(sensor, &sub_gpio_sensor, "Sensor power enable", NULL),
+                               SHELL_CMD(led, &sub_gpio_led, "Status LED control", NULL),
+                               SHELL_SUBCMD_SET_END);
+
 /* 서브커맨드 집합 */
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_diag,
                                SHELL_CMD(echo, NULL, "echo <text...> (UART RX check)", cmd_echo),
-                               SHELL_CMD(i2c - scan, NULL, "I2C bus scan (0x03..0x77)", cmd_i2c_scan),
-                               SHELL_CMD(imu - who, NULL, "LSM6DSO WHO_AM_I check", cmd_imu_who),
-                               SHELL_CMD(dip - read, NULL, "Read DIP(TCA9534) and parse", cmd_dip_read),
+                               SHELL_CMD(i2c-scan, NULL, "I2C bus scan (0x03..0x77)", cmd_i2c_scan),
+                               SHELL_CMD(imu-who, NULL, "LSM6DSO WHO_AM_I check", cmd_imu_who),
+                               SHELL_CMD(dip-read, NULL, "Read DIP(TCA9534) and parse", cmd_dip_read),
                                SHELL_CMD(log, NULL, "diag log [on|off] (show if no arg)", cmd_log_sw),
                                SHELL_CMD(ntc, NULL, "Read NTC on AIN1 and print temperature", cmd_ntc),
                                SHELL_CMD(ble, &sub_ble, "BLE controls", NULL),
+                               SHELL_CMD(gpio, &sub_gpio_root, "GPIO controls", NULL),
                                SHELL_SUBCMD_SET_END);
 
 /* 루트 커맨드 등록 */
