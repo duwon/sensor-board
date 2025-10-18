@@ -141,7 +141,7 @@ sensor_board_fw/
   `Rx_Ble()`로 **Scan Response(최대 31B)** 등록 가능(예: Shortened Name), 레거시/EXT 각각 방식에 맞게 반영.
 * **초기화/시작 정책:**
 
-  * `Init_Ble(cfg)`: **“현재 모드만”** stop 후 파라미터 반영(EXT는 핸들 준비까지만).
+  * `Init_Ble()`: **“현재 모드만”** stop 후 파라미터 반영(EXT는 핸들 준비까지만).
   * `Tx_Ble(mfg, len)`: **브로드캐스팅 시작/갱신** 담당(레거시 ↔ EXT 분리 운용).
   * `Ble_Stop()`: **현재 설정된 모드만** stop.
 * **인터벌 유틸:** `to_0p625(ms)`(정상 포함). 10 s도 스펙 최대(0x4000)로 클램프 처리.

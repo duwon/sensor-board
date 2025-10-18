@@ -14,8 +14,6 @@
 LOG_MODULE_REGISTER(app, LOG_LEVEL_INF);
 
 /* 진단 로그 스위치 */
-static atomic_t g_diag_log_on = ATOMIC_INIT(1);
-static inline bool diag_on(void) { return atomic_get(&g_diag_log_on); }
 
 /* 주기 작업 */
 static struct k_work_delayable loop_work;
@@ -56,20 +54,32 @@ static size_t build_basic_mfg(uint8_t *out, size_t cap,
 	return idx;
 }
 
+static void get_sensor_data(sensor_sample_t *s)
+{
+	/* 1) 센서 읽기(간단) */
+	read_pressure_0x28(s);
+	int16_t t_cx100 = 0;
+	read_ntc_ain1_cx100(&t_cx100);
+	s->temperature_c_x100 = t_cx100;
+	s->battery_pc = 100;
+}
+
 static void loop_fn(struct k_work *w)
 {
 	/* 1) 센서 읽기(간단) */
 	sensor_sample_t s = {0};
-	read_pressure_0x28(&s);
-	int16_t t_cx100 = 0;
-	read_ntc_ain1_cx100(&t_cx100);
-	s.temperature_c_x100 = t_cx100;
-	s.battery_pc = 100;
+	get_sensor_data(&s);
 
 	/* 2) 기본 Manufacturer 패킷 빌드 */
 	uint8_t mfg[24];
 	size_t mfg_len = build_basic_mfg(mfg, sizeof(mfg),
 									 s.p_value_x100, s.temperature_c_x100, s.battery_pc);
+
+	if (app_is_hold()) // BLE 일시정지 상태, 디버깅용
+	{
+		k_sleep(K_MSEC(50));
+		return;
+	}
 
 	/* 3) 광고 시작/갱신 (브로드캐스트 전용) */
 	int err = Tx_Ble(mfg, mfg_len);

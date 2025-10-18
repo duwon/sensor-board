@@ -5,6 +5,9 @@
 #include <zephyr/shell/shell.h>
 #include "debug.h"
 #include "dip_switch.h" /* Get_Switch() */
+#include "ble_adv.h"
+#include "sensors.h"
+
 LOG_MODULE_REGISTER(app_dbg, LOG_LEVEL_INF);
 
 /* I2C0 핸들 */
@@ -162,18 +165,21 @@ static int cmd_log_sw(const struct shell *sh, size_t argc, char **argv)
 /* --- NTC 온도 읽기 커맨드 ---------------------------------------- */
 static int cmd_ntc(const struct shell *sh, size_t argc, char **argv)
 {
-    ARG_UNUSED(argc); ARG_UNUSED(argv);
+    ARG_UNUSED(argc);
+    ARG_UNUSED(argv);
 
     int16_t vdd_mv = 0;
-    int16_t cx100  = 0;
+    int16_t cx100 = 0;
 
     int rc = read_vdd_mv(&vdd_mv);
-    if (rc) {
+    if (rc)
+    {
         shell_error(sh, "VDD read failed: %d", rc);
         return rc;
     }
     rc = read_ntc_ain1_cx100(&cx100);
-    if (rc) {
+    if (rc)
+    {
         shell_error(sh, "NTC read failed: %d", rc);
         return rc;
     }
@@ -186,6 +192,53 @@ static int cmd_ntc(const struct shell *sh, size_t argc, char **argv)
     return 0;
 }
 
+/* --- BLE 제어 커맨드 ---------------------------------------- */
+static int cmd_ble_start(const struct shell *shell, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc);
+    ARG_UNUSED(argv);
+
+    /* 홀드 해제 먼저 */
+    app_set_hold(false);
+
+    int rc = Ble_Start();
+    if (rc == 0)
+        shell_print(shell, "BLE advertising started; loop resumed.");
+    else
+        shell_error(shell, "BLE start failed: %d", rc);
+    return rc;
+}
+
+static int cmd_ble_stop(const struct shell *shell, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc);
+    ARG_UNUSED(argv);
+    int rc = Ble_Stop();
+    app_set_hold(true);
+
+    if (rc == 0)
+        shell_print(shell, "BLE advertising stopped.");
+    else
+        shell_error(shell, "BLE stop failed: %d", rc);
+    return rc;
+}
+
+/* BLE 상태 확인 */
+static int cmd_ble_status(const struct shell *shell, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc);
+    ARG_UNUSED(argv);
+    shell_print(shell, "BLE adv running: %s", Ble_IsRunning() ? "YES" : "NO");
+    return 0;
+}
+
+/* diag ble ... 트리 구성 */
+SHELL_STATIC_SUBCMD_SET_CREATE(sub_ble,
+                               SHELL_CMD(start, NULL, "Start BLE advertising (legacy/ext auto).", cmd_ble_start),
+                               SHELL_CMD(stop, NULL, "Stop BLE advertising.", cmd_ble_stop),
+                               SHELL_CMD(status, NULL, "Show BLE advertising status.", cmd_ble_status),
+                               SHELL_SUBCMD_SET_END);
+
 /* 서브커맨드 집합 */
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_diag,
                                SHELL_CMD(echo, NULL, "echo <text...> (UART RX check)", cmd_echo),
@@ -193,7 +246,8 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_diag,
                                SHELL_CMD(imu - who, NULL, "LSM6DSO WHO_AM_I check", cmd_imu_who),
                                SHELL_CMD(dip - read, NULL, "Read DIP(TCA9534) and parse", cmd_dip_read),
                                SHELL_CMD(log, NULL, "diag log [on|off] (show if no arg)", cmd_log_sw),
-                               SHELL_CMD(ntc, NULL, "Read NTC on AIN1 and print temperature", cmd_ntc), /* ← 추가 */
+                               SHELL_CMD(ntc, NULL, "Read NTC on AIN1 and print temperature", cmd_ntc),
+                               SHELL_CMD(ble, &sub_ble, "BLE controls", NULL),
                                SHELL_SUBCMD_SET_END);
 
 /* 루트 커맨드 등록 */

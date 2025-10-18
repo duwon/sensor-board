@@ -21,8 +21,17 @@ static inline uint16_t ble_to_0p625(uint32_t ms)
     return (uint16_t)units;
 }
 
-/* API */
-int Init_Ble(void);                 
+const ble_cfg_t *ble_get_last_cfg(void);
+
+/* ===================== API 구현 ===================== */
+int Init_Ble(void);
 int Tx_Ble(const uint8_t *mfg, size_t mfg_len); /* 브로드캐스트 시작/갱신 */
 
-const ble_cfg_t *ble_get_last_cfg(void);
+/* 모든 광고 세트/자원 중단 */
+int Ble_Stop(void);
+
+/* 마지막 설정으로 광고 시작(레거시/확장 둘 다 내부에서 처리) */
+int Ble_Start(void);
+
+/* 상태 조회용 */
+bool Ble_IsRunning(void);

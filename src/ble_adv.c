@@ -4,16 +4,20 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/settings/settings.h>
 #include <string.h>
+#include "app_diag.h"
 
 LOG_MODULE_REGISTER(ble_adv, LOG_LEVEL_INF);
 
+
 /* ===================== 내부 설정 ===================== */
 /* 확장 광고 파라미터: 비연결/비스캔, 공용 주소 사용, 1M PHY */
-#define ADV_ONE_SHOT_MS   150    /* "1회 전송" 유사 동작 위해 매우 짧게 광고 */
-#define ADV_INT_MIN_100MS 0x00A0  /* 0x00A0 * 0.625ms = 100ms */
+#define ADV_ONE_SHOT_MS 200      /* "1회 전송" 유사 동작 위해 매우 짧게 광고 */
+#define ADV_INT_MIN_100MS 0x00A0 /* 0x00A0 * 0.625ms = 100ms */
 #define ADV_INT_MAX_100MS 0x00A0
 
 static struct bt_le_ext_adv *s_ext_adv;
+static bool s_is_ext;          // 현재 모드가 확장 광고인지
+static atomic_t s_adv_running = ATOMIC_INIT(1); // 실행 상태 플래그
 
 /* 확장 광고 파라미터 (Zephyr 4.1.99 / NCS 3.1.0 호환) */
 static const struct bt_le_adv_param ext_adv_param = {
@@ -27,11 +31,75 @@ static const struct bt_le_adv_param ext_adv_param = {
     .peer = NULL,
 };
 
+bool Ble_IsRunning(void)
+{
+    return atomic_get(&s_adv_running);
+}
+
+int Ble_Start(void)
+{
+    if (atomic_get(&s_adv_running))
+    {
+        LOG_INF("BLE advertising already running");
+        return 0;
+    }
+
+    /* 마지막/현재 설정으로 컨트롤러 준비 (NULL: 내부 last_cfg 사용 가정) */
+    int err = Init_Ble();
+    if (err)
+    {
+        LOG_ERR("Init_Ble failed (%d)", err);
+        return err;
+    }
+
+    LOG_INF("BLE advertising started");
+    return 0;
+}
+
+int Ble_Stop(void)
+{
+    int err = 0;
+
+    /* 이미 중단된 상태면 빠르게 리턴 */
+    if (!atomic_get(&s_adv_running))
+    {
+        LOG_INF("BLE advertising already stopped");
+        return 0;
+    }
+
+    if (s_is_ext)
+    {
+        if (s_ext_adv)
+        {
+            err = bt_le_ext_adv_stop(s_ext_adv);
+            if (err && err != -EALREADY)
+            {
+                LOG_ERR("bt_le_ext_adv_stop failed (%d)", err);
+                return err;
+            }
+        }
+    }
+    else
+    {
+        err = bt_le_adv_stop();
+        if (err && err != -EALREADY)
+        {
+            LOG_ERR("bt_le_adv_stop failed (%d)", err);
+            return err;
+        }
+    }
+
+    atomic_clear(&s_adv_running);
+    LOG_INF("BLE advertising stopped");
+    return 0;
+}
+
 /* ===================== API 구현 ===================== */
 int Init_Ble(void)
 {
     int err = bt_enable(NULL);
-    if (err) {
+    if (err)
+    {
         printk("bt_enable failed (%d)\n", err);
         return err;
     }
@@ -39,7 +107,8 @@ int Init_Ble(void)
     /* 확장 광고 세트 생성 (Non-connectable, Non-scannable) */
     struct bt_le_ext_adv *adv = NULL;
     err = bt_le_ext_adv_create(&ext_adv_param, NULL, &adv);
-    if (err) {
+    if (err)
+    {
         printk("bt_le_ext_adv_create failed (%d)\n", err);
         return err;
     }
@@ -55,10 +124,12 @@ int Init_Ble(void)
  */
 int Tx_Ble(const uint8_t *mfg, size_t mfg_len)
 {
-    if (!mfg || mfg_len == 0) {
+    if (!mfg || mfg_len == 0)
+    {
         return -EINVAL;
     }
-    if (!s_ext_adv) {
+    if (!s_ext_adv)
+    {
         return -EIO;
     }
 
@@ -70,7 +141,8 @@ int Tx_Ble(const uint8_t *mfg, size_t mfg_len)
     };
 
     int err = bt_le_ext_adv_set_data(s_ext_adv, &ad, 1, NULL, 0);
-    if (err) {
+    if (err)
+    {
         printk("bt_le_ext_adv_set_data failed (%d)\n", err);
         return err;
     }
@@ -82,7 +154,8 @@ int Tx_Ble(const uint8_t *mfg, size_t mfg_len)
     };
 
     err = bt_le_ext_adv_start(s_ext_adv, &start);
-    if (err) {
+    if (err)
+    {
         printk("bt_le_ext_adv_start failed (%d)\n", err);
         return err;
     }
@@ -92,12 +165,14 @@ int Tx_Ble(const uint8_t *mfg, size_t mfg_len)
 
     /* 광고 중지 */
     err = bt_le_ext_adv_stop(s_ext_adv);
-    if (err) {
+    if (err)
+    {
         printk("bt_le_ext_adv_stop failed (%d)\n", err);
         return err;
     }
-
-    printk("EXT ADV burst done (%u ms, MFG %u bytes)\n",
-           (unsigned)ADV_ONE_SHOT_MS, (unsigned)mfg_len);
+    if (diag_on())
+    {
+        printk("EXT ADV burst done (%u ms, MFG %u bytes)\n", (unsigned)ADV_ONE_SHOT_MS, (unsigned)mfg_len);
+    }
     return 0;
 }
