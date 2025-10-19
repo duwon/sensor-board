@@ -8,6 +8,8 @@
 #include "ble_adv.h"
 #include "sensors.h"
 #include "gpio_if.h"
+#include "lsm6dso.h"
+#include "lsm6dso.h"
 
 LOG_MODULE_REGISTER(app_dbg, LOG_LEVEL_INF);
 
@@ -329,16 +331,63 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_gpio_root,
                                SHELL_CMD(led, &sub_gpio_led, "Status LED control", NULL),
                                SHELL_SUBCMD_SET_END);
 
+/************** 가속소 센서 쉘 *********** */
+static int cmd_imu_init(const struct shell *shell, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc);
+    ARG_UNUSED(argv);
+    int rc = lsm6dso_init(LSM6DSO_FS_4G); /* 기본 ±4g */
+    shell_print(shell, "lsm6dso_init: rc=%d", rc);
+    return rc;
+}
+
+static int cmd_imu_once(const struct shell *shell, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc);
+    ARG_UNUSED(argv);
+    lsm6dso_stats_t st = {0};
+    int rc = lsm6dso_capture_once(&st);
+    shell_print(shell, "rc=%d, n=%u, WHO=0x%02X, WTM=%d", rc, st.n, st.whoami, st.wtm_reached);
+
+    if (st.n > 0)
+    {
+        shell_print(shell, "ALL  PEAK (x,y,z) = (%d,%d,%d) x0.01 m/s^2",
+                    st.peak_ms2_x100[0], st.peak_ms2_x100[1], st.peak_ms2_x100[2]);
+        shell_print(shell, "ALL  RMS  (x,y,z) = (%d,%d,%d) x0.01 m/s^2",
+                    st.rms_ms2_x100[0], st.rms_ms2_x100[1], st.rms_ms2_x100[2]);
+        shell_print(shell, "10-1000Hz PEAK(x,y,z) = (%d,%d,%d) x0.01 m/s^2",
+                    st.bl_peak_ms2_x100[0], st.bl_peak_ms2_x100[1], st.bl_peak_ms2_x100[2]);
+        shell_print(shell, "10-1000Hz RMS (x,y,z) = (%d,%d,%d) x0.01 m/s^2",
+                    st.bl_rms_ms2_x100[0], st.bl_rms_ms2_x100[1], st.bl_rms_ms2_x100[2]);
+    }
+    return rc;
+}
+
+static int cmd_imu_regs(const struct shell *shell, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc);
+    ARG_UNUSED(argv);
+    return lsm6dso_dump_regs(shell);
+}
+
+/* 쉘 서브커맨드 등록 */
+SHELL_STATIC_SUBCMD_SET_CREATE(sub_imu,
+                               SHELL_CMD(init, NULL, "LSM6DSO init (ODR=3.33k, FS=±4g)", cmd_imu_init),
+                               SHELL_CMD(once, NULL, "Capture burst -> peak/rms", cmd_imu_once),
+                               SHELL_CMD(regs, NULL, "Dump key IMU/FIFO registers", cmd_imu_regs),
+                               SHELL_SUBCMD_SET_END);
+
 /* 서브커맨드 집합 */
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_diag,
                                SHELL_CMD(echo, NULL, "echo <text...> (UART RX check)", cmd_echo),
-                               SHELL_CMD(i2c-scan, NULL, "I2C bus scan (0x03..0x77)", cmd_i2c_scan),
-                               SHELL_CMD(imu-who, NULL, "LSM6DSO WHO_AM_I check", cmd_imu_who),
-                               SHELL_CMD(dip-read, NULL, "Read DIP(TCA9534) and parse", cmd_dip_read),
+                               SHELL_CMD(i2c - scan, NULL, "I2C bus scan (0x03..0x77)", cmd_i2c_scan),
+                               SHELL_CMD(imu - who, NULL, "LSM6DSO WHO_AM_I check", cmd_imu_who),
+                               SHELL_CMD(dip - read, NULL, "Read DIP(TCA9534) and parse", cmd_dip_read),
                                SHELL_CMD(log, NULL, "diag log [on|off] (show if no arg)", cmd_log_sw),
                                SHELL_CMD(ntc, NULL, "Read NTC on AIN1 and print temperature", cmd_ntc),
                                SHELL_CMD(ble, &sub_ble, "BLE controls", NULL),
                                SHELL_CMD(gpio, &sub_gpio_root, "GPIO controls", NULL),
+                               SHELL_CMD(imu, &sub_imu, "IMU LSM6DSO test", NULL),
                                SHELL_SUBCMD_SET_END);
 
 /* 루트 커맨드 등록 */

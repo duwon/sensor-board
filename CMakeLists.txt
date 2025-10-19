@@ -14,4 +14,5 @@ target_sources(app PRIVATE
   src/debug.c
   src/sleep_if.c
   src/app_diag.c
+  src/lsm6dso.c
 )
