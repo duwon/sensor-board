@@ -26,8 +26,8 @@ static int16_t adc_buf;
 #define NTC_GAIN ADC_GAIN_1_6 /* FS = 3.6V */
 #define NTC_FS_MV 3600.0f
 
-#define VDD_GAIN ADC_GAIN_1 /* FS = 0.6V (VDD/4 측정에 적합) */
-#define VDD_FS_MV 600.0f
+#define VDD_GAIN ADC_GAIN_1_6 /* FS = 0.6V (VDD/4 측정에 적합) */
+#define VDD_FS_MV 3600.0f
 
 #define ADC_REF_SETTING ADC_REF_INTERNAL
 #define ADC_ACQ_TIME_SETTING ADC_ACQ_TIME(ADC_ACQ_TIME_MICROSECONDS, 10)
@@ -48,7 +48,7 @@ static bool ch_ntc_inited;
 static bool ch_vdd_inited;
 
 /* raw → mV 변환 */
-static inline float adc_raw_to_mv_ex(int16_t raw, float fs_mv)
+static inline float adc_raw_to_mv(int16_t raw, float fs_mv)
 {
     const float denom = (float)((1U << ADC_RES_BITS) - 1U);
     if (raw < 0)
@@ -135,18 +135,15 @@ int read_vdd_mv(int16_t *vdd_mv)
     if (rc)
         return rc;
 
-    /* SAADC 입력 = VDD/4, 우리가 읽은 건 그 전압(mV) */
-    float v_meas_mv = adc_raw_to_mv_ex(adc_buf, VDD_FS_MV);
-    float vdd = 4.0f * v_meas_mv;
+    /* SAADC 입력 = VDD/4,  전압(mV) */
+    float v_meas_mv = adc_raw_to_mv(adc_buf, VDD_FS_MV); /* 이제 FS=3600 */
+    float vdd = 1.0f * v_meas_mv;                        /* VDD = 4 × (VDD/4) */
 
-    /* 가드는 일단 느슨하게, 또는 임시로 제거하여 값 확인 */
-    if (vdd < 500.0f || vdd > 6000.0f)
-        return -ERANGE;
+    /* VDD 입력 범위 확인 */
+    // if (vdd < 1500.0f || vdd > 5000.0f)
+    //     return -ERANGE;
 
-    int32_t mv = (int32_t)lroundf(vdd);
-    if (mv > INT16_MAX)
-        mv = INT16_MAX;
-    *vdd_mv = (int16_t)mv;
+    *vdd_mv = (int16_t)lroundf(vdd);
     return 0;
 }
 
@@ -177,7 +174,7 @@ int read_ntc_ain1_cx100(int16_t *cx100)
     if (rc)
         return rc;
 
-    float vout_mv = adc_raw_to_mv_ex(adc_buf, NTC_FS_MV);
+    float vout_mv = adc_raw_to_mv(adc_buf, NTC_FS_MV);
 
     /* R_ntc = Rpull * (VDD - Vout) / Vout (NTC위/풀다운아래) */
     if (vout_mv <= 0.0f || vout_mv >= (float)vdd_mv - 1.0f)

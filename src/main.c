@@ -25,6 +25,12 @@ static uint32_t led_period_ms = 500;
 static bool led_state = false;
 static void led_fn(struct k_work *w)
 {
+	if (app_is_hold()) // BLE 일시정지 상태, 디버깅용
+	{
+		k_sleep(K_MSEC(50));
+		return;
+	}
+
 	led_state = !led_state;
 	board_led_set(led_state);
 	k_work_schedule(&led_work, K_MSEC(led_period_ms));
@@ -126,6 +132,7 @@ int main(void)
 	k_work_init_delayable(&led_work, led_fn);
 	k_work_schedule(&led_work, K_MSEC(200));
 
+	/* 메인 루프 작업 시작 */
 	k_work_init_delayable(&loop_work, loop_fn);
 	k_work_schedule(&loop_work, K_SECONDS(1));
 

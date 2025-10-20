@@ -407,6 +407,6 @@ uart:~$ diag ble stop        # BLE 비활성화 (라디오 트래픽 차단)
 uart:~$ diag gpio rpu on     # RPU 전원 인가
 uart:~$ diag gpio sensor on  # 센서 전원 인가
 uart:~$ diag gpio led on     # 상태 LED ON
-uart:~$ diag i2c-scan        # I²C 장치 응답 확인
+uart:~$ diag i2c             # I²C 장치 응답 확인
 uart:~$ diag ntc             # NTC 온도 확인
 ```
