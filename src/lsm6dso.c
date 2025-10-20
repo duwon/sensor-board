@@ -83,6 +83,9 @@ static const struct device *i2c0 = DEVICE_DT_GET(DT_NODELABEL(i2c0));
 /* 샘플링 관련(사양서: 3.33 kHz) */
 #define IMU_FS_HZ 3330.0f /* 3.33 kHz 근사 */
 
+#define REG_STATUS_REG            0x1E   /* XLDA=bit0 */
+#define XLDA_BIT                  0x01
+
 /* ====== 내부 I2C 유틸 ====== */
 static int wr_u8(uint8_t reg, uint8_t val)
 {
@@ -324,187 +327,131 @@ static void bandlimited_rms_peak_ms2_x100(
     float f_lo, float f_hi, int16_t *out_rms_x100, int16_t *out_peak_x100)
 {
     static float re[NFFT], im[NFFT], win[NFFT];
-    static bool win_ready = false;
-    if (!win_ready)
-    {
-        make_hann(win, NFFT);
-        win_ready = true;
-    }
+    static bool  win_ready = false;
+    if (!win_ready) { make_hann(win, NFFT); win_ready = true; }
 
-    /* 1) 실수 입력 구성(창 곱, 물리단위), 나머지 제로패딩 */
     const int useN = (n < NFFT) ? n : NFFT;
-    for (int i = 0; i < useN; ++i)
-    {
-        float v = (lsb[i] * lsb_to_ms2);
-        float w = win[i]; /* 창 적용 */
-        re[i] = v * w;
-        im[i] = 0.f;
-    }
-    for (int i = useN; i < NFFT; ++i)
-    {
-        re[i] = 0.f;
-        im[i] = 0.f;
-    }
 
-    /* 2) FFT → 대역 필터링(원-사이드 유지, 대칭 복원) */
+    /* 0) DC(평균) 제거: LSB 평균을 빼고 물리단위로 변환 */
+    float mean_lsb = 0.f;
+    for (int i=0; i<useN; ++i) mean_lsb += lsb[i];
+    mean_lsb = (useN > 0) ? (mean_lsb / useN) : 0.f;
+
+    for (int i=0; i<useN; ++i) {
+        float v = ( (float)lsb[i] - mean_lsb ) * lsb_to_ms2;  // 평균 제거
+        float w = win[i];
+        re[i] = v * w;  /* 창을 평균 제거 후에 곱함 */
+        im[i] = 0.f;
+    }
+    for (int i=useN; i<NFFT; ++i) { re[i]=0.f; im[i]=0.f; }
+
     fft_radix2(re, im, 0);
 
-    int kmin = 0, kmax = 0;
+    int kmin=0, kmax=0;
     band_to_bins(IMU_FS_HZ, NFFT, f_lo, f_hi, &kmin, &kmax);
 
-    /* DC, Nyquist 포함 전 영역을 0으로 한 뒤, kmin..kmax만 통과시키는 대신
-       연산량 줄이기 위해 "대역 밖"을 0으로 만든다. */
-    for (int k = 1; k < NFFT / 2; ++k)
-    {
-        if (k < kmin || k > kmax)
-        {
-            re[k] = im[k] = 0.f;
-            re[NFFT - k] = im[NFFT - k] = 0.f; /* 공액 대칭 */
+    for (int k=1; k<NFFT/2; ++k) {
+        if (k < kmin || k > kmax) {
+            re[k]=im[k]=0.f;
+            re[NFFT-k]=im[NFFT-k]=0.f;
         }
     }
-    /* DC/Nyquist 제거 */
-    re[0] = im[0] = 0.f;
-    re[NFFT / 2] = im[NFFT / 2] = 0.f;
+    re[0]=im[0]=0.f; re[NFFT/2]=im[NFFT/2]=0.f;
 
-    /* 3) iFFT → 시간영역 대역제한 파형 */
     fft_radix2(re, im, 1);
 
-    /* 4) RMS/Peak 계산 (유효 구간: 원래 샘플 길이만 고려) */
-    float peak = 0.f, sumsq = 0.f;
-    const int M = useN;
-    for (int i = 0; i < M; ++i)
-    {
-        float a = re[i]; /* 실수부가 시간 파형 */
-        float au = a > 0 ? a : -a;
-        if (au > peak)
-            peak = au;
-        sumsq += a * a;
+    /* 시간영역에서 RMS/Peak (원래 샘플 길이만 고려) */
+    float peak=0.f, sumsq=0.f; const int M=useN;
+    for (int i=0; i<M; ++i) {
+        float a = re[i];
+        float au = a>0 ? a : -a;
+        if (au > peak) peak = au;
+        sumsq += a*a;
     }
-    float rms = (M > 0) ? sqrtf(sumsq / (float)M) : 0.f;
+    float rms = (M>0) ? sqrtf(sumsq / (float)M) : 0.f;
 
     *out_peak_x100 = (int16_t)(peak * 100.0f + 0.5f);
-    *out_rms_x100 = (int16_t)(rms * 100.0f + 0.5f);
+    *out_rms_x100  = (int16_t)(rms  * 100.0f + 0.5f);
 }
+
 
 /* ====== 캡처 & 통계 산출 ====== */
 int lsm6dso_capture_once(lsm6dso_stats_t *out)
 {
-    if (!out)
-        return -EINVAL;
+    if (!out) return -EINVAL;
     memset(out, 0, sizeof(*out));
 
-    int rc = fifo_reset_keep_stop_on_wtm();
-    if (rc)
-        return rc;
+    int rc;
 
-    /* 1) 워터마크 폴링 */
-    uint16_t diff = 0;
-    int tries = 0;
-    do
-    {
-        rc = fifo_diff_words(&diff);
-        if (rc)
-            return rc;
-        if (diff >= FIFO_WTM_WORDS)
-            break;
-        k_sleep(K_USEC(500)); /* 0.5 ms */
-    } while (++tries < 10000); /* ~5s */
+    /* A) FIFO 완전 비활성 (바이패스) — 혼선 방지 */
+    rc = wr_u8(REG_FIFO_CTRL4, 0x00);                   /* BYPASS */
+    if (rc) return rc;
+    k_sleep(K_MSEC(2));
 
-    bool wtm = (diff >= FIFO_WTM_WORDS);
-    out->wtm_reached = wtm;
+    /* B) 0.3 s 동안 DRDY 폴링하며 직접 읽기
+          - ODR=3.33 kHz 이므로 최대 ≈ 1100 샘플 가능
+          - 안전상 최대 1024개까지만 저장 */
+    const uint32_t window_ms = 330;
+    const uint16_t N_MAX = 1024;
 
-    /* 2) 이번 캡처에서 '읽어야 할 총 워드 수' 결정
-          - 이상적: WTM 도달 → 999 워드
-          - 미도달: 현재 diff 만큼만 읽고 끝냄(부분 캡처)
-     */
-    uint16_t target_words = wtm ? FIFO_WTM_WORDS : diff;
-
-    if (target_words == 0)
-    {
-        /* 데이터가 전혀 없으면 타임아웃 취급 */
-        return -ETIMEDOUT;
-    }
-
-    /* 3) FIFO에서 target_words 만큼을 '워드 기준'으로 소진
-          - 가속도 태그만 n_accel 증가 (광의로는 타임스탬프 등 다른 태그도 존재 가능)
-     */
-    uint16_t consumed_words = 0;
+    uint32_t t0 = k_uptime_get_32();
     uint16_t n_accel = 0;
 
-    while (consumed_words < target_words)
-    {
-        uint16_t left = target_words - consumed_words;
-        uint16_t words_now = MIN(left, (uint16_t)(sizeof(g_chunk) / FIFO_WORD_BYTES)); /* 32 words */
-        uint16_t bytes_now = words_now * FIFO_WORD_BYTES;
+    while ((k_uptime_get_32() - t0) < window_ms) {
+        uint8_t sr = 0;
+        rc = rd_u8(REG_STATUS_REG, &sr);
+        if (rc) return rc;
 
-        uint8_t reg = REG_FIFO_DATA_OUT_TAG;
-        rc = i2c_write_read(i2c0, LSM6DSO_I2C_ADDR, &reg, 1, g_chunk, bytes_now);
-        if (rc)
-            return rc;
+        if (sr & XLDA_BIT) {
+            /* OUTX_L_A .. OUTZ_H_A (연속 6바이트) */
+            uint8_t reg = REG_OUTX_L_A;
+            uint8_t raw[6];
+            rc = i2c_write_read(i2c0, LSM6DSO_I2C_ADDR, &reg, 1, raw, sizeof(raw));
+            if (rc) return rc;
 
-        /* 이번에 'words_now' 만큼을 반드시 소비한다 */
-        for (uint16_t i = 0; i < bytes_now; i += FIFO_WORD_BYTES)
-        {
-            uint8_t tag = g_chunk[i + 0];
+            int16_t x = (int16_t)((uint16_t)raw[0] | ((uint16_t)raw[1] << 8));
+            int16_t y = (int16_t)((uint16_t)raw[2] | ((uint16_t)raw[3] << 8));
+            int16_t z = (int16_t)((uint16_t)raw[4] | ((uint16_t)raw[5] << 8));
 
-            if (is_accel_tag(tag))
-            {
-                int16_t x = (int16_t)((uint16_t)g_chunk[i + 1] | ((uint16_t)g_chunk[i + 2] << 8));
-                int16_t y = (int16_t)((uint16_t)g_chunk[i + 3] | ((uint16_t)g_chunk[i + 4] << 8));
-                int16_t z = (int16_t)((uint16_t)g_chunk[i + 5] | ((uint16_t)g_chunk[i + 6] << 8));
-                if (n_accel < FIFO_WTM_WORDS)
-                {
-                    g_ax[n_accel] = x;
-                    g_ay[n_accel] = y;
-                    g_az[n_accel] = z;
-                    n_accel++;
-                }
+            if (n_accel < FIFO_WTM_WORDS && n_accel < N_MAX) {
+                g_ax[n_accel] = x; g_ay[n_accel] = y; g_az[n_accel] = z;
+                n_accel++;
             }
+        } else {
+            /* 수 μs 대기 */
+            k_busy_wait(80); /* ≈ ODR 주기의 1/40 */
         }
 
-        consumed_words += words_now;
-
-        /* 안전망: 비정상 장시간 루프 방지 */
-        if (consumed_words > 4 * FIFO_WTM_WORDS)
-        {
-            /* 뭔가 이상 → 중단 */
-            break;
-        }
+        if (n_accel >= FIFO_WTM_WORDS) break;  /* 999개 모이면 */
     }
 
     out->n = n_accel;
+    out->wtm_reached = (n_accel >= FIFO_WTM_WORDS);
 
-    /* 4) 전체대역 시간영역 통계 */
+    /* C) 통계 계산 (전체대역) */
     float s = lsm6dso_scale_ms2_per_lsb(LSM6DSO_FS_4G);
-    float sumsq_x = 0, sumsq_y = 0, sumsq_z = 0;
-    float peak_x = 0, peak_y = 0, peak_z = 0;
+    float sumsq_x=0, sumsq_y=0, sumsq_z=0, peak_x=0, peak_y=0, peak_z=0;
 
-    for (uint16_t i = 0; i < n_accel; ++i)
-    {
-        float fx = g_ax[i] * s, fy = g_ay[i] * s, fz = g_az[i] * s;
-        float axu = fabsf(fx), ayu = fabsf(fy), azu = fabsf(fz);
-        if (axu > peak_x)
-            peak_x = axu;
-        if (ayu > peak_y)
-            peak_y = ayu;
-        if (azu > peak_z)
-            peak_z = azu;
-        sumsq_x += fx * fx;
-        sumsq_y += fy * fy;
-        sumsq_z += fz * fz;
+    for (uint16_t i=0; i<n_accel; ++i) {
+        float fx=g_ax[i]*s, fy=g_ay[i]*s, fz=g_az[i]*s;
+        float axu=fabsf(fx), ayu=fabsf(fy), azu=fabsf(fz);
+        if (axu>peak_x) peak_x=axu;
+        if (ayu>peak_y) peak_y=ayu;
+        if (azu>peak_z) peak_z=azu;
+        sumsq_x+=fx*fx; sumsq_y+=fy*fy; sumsq_z+=fz*fz;
     }
-    float rms_x = (n_accel > 0) ? sqrtf(sumsq_x / n_accel) : 0.f;
-    float rms_y = (n_accel > 0) ? sqrtf(sumsq_y / n_accel) : 0.f;
-    float rms_z = (n_accel > 0) ? sqrtf(sumsq_z / n_accel) : 0.f;
+    float rms_x = (n_accel>0)? sqrtf(sumsq_x/n_accel) : 0.f;
+    float rms_y = (n_accel>0)? sqrtf(sumsq_y/n_accel) : 0.f;
+    float rms_z = (n_accel>0)? sqrtf(sumsq_z/n_accel) : 0.f;
 
     out->peak_ms2_x100[0] = (int16_t)(peak_x * 100.f + 0.5f);
     out->peak_ms2_x100[1] = (int16_t)(peak_y * 100.f + 0.5f);
     out->peak_ms2_x100[2] = (int16_t)(peak_z * 100.f + 0.5f);
-    out->rms_ms2_x100[0] = (int16_t)(rms_x * 100.f + 0.5f);
-    out->rms_ms2_x100[1] = (int16_t)(rms_y * 100.f + 0.5f);
-    out->rms_ms2_x100[2] = (int16_t)(rms_z * 100.f + 0.5f);
+    out->rms_ms2_x100[0]  = (int16_t)(rms_x  * 100.f + 0.5f);
+    out->rms_ms2_x100[1]  = (int16_t)(rms_y  * 100.f + 0.5f);
+    out->rms_ms2_x100[2]  = (int16_t)(rms_z  * 100.f + 0.5f);
 
-    /* 5) 10–1000 Hz 대역 제한 통계 (부분 캡처라도 계산 가능) */
+    /* D) 10–1000 Hz 대역 제한 */
     const float FLO = 10.0f, FHI = 1000.0f;
     bandlimited_rms_peak_ms2_x100(g_ax, n_accel, s, FLO, FHI,
                                   &out->bl_rms_ms2_x100[0], &out->bl_peak_ms2_x100[0]);
@@ -513,13 +460,7 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out)
     bandlimited_rms_peak_ms2_x100(g_az, n_accel, s, FLO, FHI,
                                   &out->bl_rms_ms2_x100[2], &out->bl_peak_ms2_x100[2]);
 
-    /* 6) WHO_AM_I (디버그용) */
     rd_u8(REG_WHO_AM_I, &out->whoami);
 
-    /* 7) 결과 리턴 결정 */
-    if (out->n >= 128)
-    { /* 충분히 의미 있는 부분 캡처면 정상 처리 */
-        return 0;
-    }
-    return out->wtm_reached ? 0 : -ETIMEDOUT;
+    return (out->n > 0) ? 0 : -EIO;
 }
