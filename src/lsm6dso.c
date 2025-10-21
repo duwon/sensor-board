@@ -1,9 +1,9 @@
 /**
  * @file lsm6dso.c
- * @brief LSM6DSO IMU 드라이버 (Zephyr)
+ * @brief LSM6DSO IMU 드라이버
  *
  * @details
- * 이 드라이버는 LSM6DSO 가속도계 센서에 중점을 둡니다.
+ * LSM6DSO 가속도계 센서 드라이버
  * 3.33kHz의 고속 샘플링(ODR) 설정 후, FIFO를 사용하지 않고 DRDY(Data Ready) 비트를 폴링(polling)하여 데이터를 직접 캡처합니다.
  *
  * 캡처된 데이터는 내장된 1024-point FFT 루틴을 통해 전체 대역(Broadband) 및 특정 대역(10-1000Hz)의 RMS 및 Peak 값을 m/s^2 단위로 계산하는 데 사용됩니다.
@@ -233,15 +233,6 @@ float lsm6dso_scale_ms2_per_lsb(lsm6dso_fs_t fs)
     return (fs == LSM6DSO_FS_16G) ? 0.004784f : 0.001196f; /* ±16g / ±4g 근사값 */
 }
 
-/*
- * [불필요 코드 제거]
- * 원본 117-122 라인의 중복/오해의 소지가 있는 define 삭제
- * - REG_FIFO_CTRL5 (중복)
- * - ODR_FIFO_3k33 (중복)
- * - FIFO_MODE_STOP_ON_WTM (FIFO_MODE_FIFO와 동일하여 혼란 유발)
- * (FIFO_MODE_CONTINUOUS는 상단 비트필드 정의부로 이동)
- */
-
 /**
  * @brief LSM6DSO 센서를 초기화합니다.
  *
@@ -256,9 +247,7 @@ float lsm6dso_scale_ms2_per_lsb(lsm6dso_fs_t fs)
  *
  * @note
  * 이 함수는 센서의 *파라미터* (ODR, FS)를 설정합니다.
- * 하지만 @ref lsm6dso_capture_once 함수는 이 함수가 설정한 FIFO 모드(Continuous) 대신,
- * 내부적으로 FIFO를 BYPASS 모드로 직접 전환하여 DRDY 폴링을 수행합니다.
- * 또한, `fs` 파라미터가 주어지지만 실제로는 `FS_XL_4G`로 고정되어 설정됩니다.
+ * 하지만 @ref lsm6dso_capture_once 함수는 이 함수가 설정한 FIFO 모드(Continuous) 대신, 내부적으로 FIFO를 BYPASS 모드로 직접 전환하여 DRDY 폴링을 수행합니다. 또한, `fs` 파라미터가 주어지지만 실제로는 `FS_XL_4G`로 고정되어 설정됩니다.
  *
  * @param fs 사용할 Full-Scale (현재 구현에서는 무시되고 ±4g로 고정됨)
  * @return 0 on success, 음수 에러 코드 on failure.

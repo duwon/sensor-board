@@ -1,7 +1,6 @@
-// sleep_if.c (수정본)
+// sleep_if.c
 #include "sleep_if.h"
 #include "gpio_if.h"
-#include "ble_adv.h"                 // ★ 추가: ble_cfg_t, Ble_Stop, Init_Ble, ble_get_last_cfg
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
@@ -21,7 +20,7 @@ int Start_Sleep(uint32_t seconds)
     LOG_INF("Enter sleep ~%us", seconds);
 
     /* 3) 슬립 대기: 이 버전은 시스템오프가 아닌 idle 슬립 */
-    k_sleep(K_SECONDS(seconds));
+    // k_sleep(K_SECONDS(seconds)); // loop_fn()에서 다시 스케줄링
 
     /* 4) 복귀는 Wakeup()에서 수행 */
     return 0;

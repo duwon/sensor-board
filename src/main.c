@@ -1,4 +1,12 @@
+/** @file
+ * @brief 센서 보드의 메인 애플리케이션 파일
+ *
+ * 이 파일은 센서 읽기, BLE 광고 데이터 빌드 및 전송,
+ * LED 상태 표시, 주기적인 Sleep/Wakeup 시퀀스를 관리합니다.
+ */
+
 #include <zephyr/kernel.h>
+#include <zephyr/sys/byteorder.h>
 #include <zephyr/sys/printk.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/atomic.h>
@@ -13,128 +21,177 @@
 
 LOG_MODULE_REGISTER(app, LOG_LEVEL_INF);
 
-/* 진단 로그 스위치 */
+/**
+ * @brief Manufacturer Specific Data를 담는 구조체 변수를 초기화합니다.
+ */
+static struct sensor_adv_data_t mfg_data = {
+    // 0xFFFF를 Little Endian으로 변환하여 저장
+    .company_id = sys_cpu_to_le16(0xFFFF),         /* [Index 5-6] Company ID */
+    .structure_version = 0x01,                     /* [Index 7] Version v1 */
+    .model_code = 0x01,                            /* [Index 8] Model Code (Inlet 압력) */
+    
+    // 상태 관리 정보
+    .device_status = 0x00,                         /* [Index 9] Device Status (정상) */
+    .error_info = 0x00,                            /* [Index 10] Error Info */
+    .mcu_temperature = 25,                         /* [Index 11] MCU Temperature (예: 25°C) */
+    .battery_percent = 95,                         /* [Index 12] Battery % (예: 95%) */
+    .value_presence_mask = 0x01,                   /* [Index 13] Inlet 압력은 Sensor Value 1만 사용 (0b00000001) */
+    
+    // 센서 값 (압력 값 10.25 mmH2O를 100배하여 1025로 변환)
+    .sensor_value_1 = sys_cpu_to_le32(1025),       /* [Index 14-17] Sensor Value 1 (압력 값) */
+    
+    // 나머지 미사용 값은 0x00으로 설정됨
+    .sensor_value_2 = 0,                           /* [Index 18-21] 미사용 */
+    .sensor_value_3 = 0,                           /* [Index 22-25] 미사용 */
+    .sensor_value_4 = 0,                           /* [Index 26-29] 미사용 */
+    .sensor_value_5 = 0,                           /* [Index 30-33] 미사용 */
+    .sensor_value_6 = 0,                           /* [Index 34-37] 미사용 */
+};
 
-/* 주기 작업 */
+/** @brief 메인 루프 작업을 위한 딜레이 가능 워크 */
 static struct k_work_delayable loop_work;
+/** @brief DIP 스위치 설정 값 */
 static struct dip_bits g_dip;
 
-/* LED heartbeat */
+/* --------------------------------- LED Heartbeat --------------------------------- */
+
+/** @brief LED Heartbeat 작업을 위한 딜레이 가능 워크 */
 static struct k_work_delayable led_work;
+/** @brief LED 켜짐/꺼짐 주기 (ms 단위) */
 static uint32_t led_period_ms = 500;
+/** @brief 현재 LED 상태 (켜짐/꺼짐) */
 static bool led_state = false;
+
+/**
+ * @brief LED Heartbeat 함수. 주기적으로 LED 상태를 토글합니다.
+ *
+ * 광고 전송 상태에 따라 led_period_ms가 변경됩니다.
+ * BLE 일시정지 상태일 경우 Heartbeat를 멈춥니다.
+ *
+ * @param w k_work 포인터 (사용되지 않음).
+ */
 static void led_fn(struct k_work *w)
 {
-	if (app_is_hold()) // BLE 일시정지 상태, 디버깅용
-	{
-		k_sleep(K_MSEC(50));
-		return;
-	}
+    if (app_is_hold()) // BLE 일시정지 상태, 디버깅용
+    {
+        k_sleep(K_MSEC(50));
+        return;
+    }
 
-	led_state = !led_state;
-	board_led_set(led_state);
-	k_work_schedule(&led_work, K_MSEC(led_period_ms));
+    led_state = !led_state;
+    board_led_set(led_state);
+    k_work_schedule(&led_work, K_MSEC(led_period_ms));
 }
 
-/* Manufacturer payload 생성 */
-static size_t build_basic_mfg(uint8_t *out, size_t cap,
-							  int32_t p_x100, int16_t t_cx100, uint8_t batt_pc)
-{
-	/* Company ID 임시 0xFFFF + 버전 등 최소 필드 */
-	if (cap < 12)
-		return 0;
-	size_t idx = 0;
-	out[idx++] = 0xFF;
-	out[idx++] = 0xFF;			   /* Company ID (test) */
-	out[idx++] = 0x01;			   /* Struct ver */
-	out[idx++] = 0x01;			   /* Model */
-	out[idx++] = (uint8_t)batt_pc; /* battery(%) */
-	/* pressure 4B LE */
-	out[idx++] = (uint8_t)(p_x100);
-	out[idx++] = (uint8_t)(p_x100 >> 8);
-	out[idx++] = (uint8_t)(p_x100 >> 16);
-	out[idx++] = (uint8_t)(p_x100 >> 24);
-	/* temp 2B LE */
-	out[idx++] = (uint8_t)(t_cx100);
-	out[idx++] = (uint8_t)(t_cx100 >> 8);
-	return idx;
-}
+/* --------------------------------- Sensor & Main Loop --------------------------------- */
 
+/**
+ * @brief 센서 값을 읽어 sensor_sample_t 구조체에 저장합니다.
+ *
+ * @param s 센서 값을 저장할 sensor_sample_t 구조체 포인터.
+ */
 static void get_sensor_data(sensor_sample_t *s)
 {
-	/* 1) 센서 읽기(간단) */
-	read_pressure_0x28(s);
-	int16_t t_cx100 = 0;
-	read_ntc_ain1_cx100(&t_cx100);
-	s->temperature_c_x100 = t_cx100;
-	s->battery_pc = 100;
+    /* 1) 센서 읽기(간단) */
+    read_pressure_0x28(s);
+    int16_t t_cx100 = 0;
+    read_ntc_ain1_cx100(&t_cx100);
+    s->temperature_c_x100 = t_cx100;
+    s->battery_pc = 100; // LTC3337 등을 통해 실제 배터리 잔량 업데이트 필요
+
+    // MCU 온도 및 배터리 업데이트 (8-bit)
+	Get_MCU_Temperature(&mfg_data.mcu_temperature);
+    mfg_data.battery_percent ++; // 예시용 임시 증가 
+
+
+    /* NOTE: device_status, error_info 필드는 여기서 오류 정보에 따라 업데이트 필요 */
+    mfg_data.device_status = 0x00; 
+
+	
 }
 
+/**
+ * @brief 메인 주기 루프 함수. 센서 데이터를 읽고 BLE 광고를 수행합니다.
+ *
+ * 이 함수는 k_work_delayable에 의해 주기적으로 호출됩니다.
+ *
+ * @param w k_work 포인터.
+ */
 static void loop_fn(struct k_work *w)
 {
-	/* 1) 센서 읽기(간단) */
-	sensor_sample_t s = {0};
-	get_sensor_data(&s);
+    Wakeup();
 
-	/* 2) 기본 Manufacturer 패킷 빌드 */
-	uint8_t mfg[24];
-	size_t mfg_len = build_basic_mfg(mfg, sizeof(mfg),
-									 s.p_value_x100, s.temperature_c_x100, s.battery_pc);
+    /* 1) 센서 읽기 */
+    sensor_sample_t s = {0};
+    get_sensor_data(&s);
 
-	if (app_is_hold()) // BLE 일시정지 상태, 디버깅용
-	{
-		k_sleep(K_MSEC(50));
-		return;
-	}
+    /* 2) Manufacturer 패킷 빌드 (정적 구조체 업데이트) */
+    
 
-	/* 3) 광고 시작/갱신 (브로드캐스트 전용) */
-	int err = Tx_Ble(mfg, mfg_len);
 
-	/* 4) LED 속도(정상/에러) */
-	bool ok = (err == 0) || (err == -EALREADY) || (err == -EINPROGRESS);
-	led_period_ms = ok ? 500 : 120;
+    if (app_is_hold()) // BLE 일시정지 상태, 디버깅용
+    {
+        k_sleep(K_MSEC(50));
+        return;
+    }
 
-	/* 5) 다음 주기 (DIP: 1=10s, 0=5s) */
-	uint32_t next_ms = g_dip.period ? 10000 : 5000;
+    /* 3) 광고 시작/갱신 (브로드캐스트 전용) */
+    // mfg_data 구조체(33바이트)와 그 크기를 Tx_Ble에 전달
+    int err = Tx_Ble((const uint8_t *)&mfg_data, sizeof(mfg_data)); 
 
-	if (diag_on())
-	{
-		LOG_INF("loop: sleep=%ums, err=%d, P=%ld x100, T=%d x100, batt=%u%%, DIP{legacy-only, period=%u}",
-				next_ms, err, (long)s.p_value_x100, s.temperature_c_x100, s.battery_pc, g_dip.period);
-	}
+    /* 4) LED 속도(정상/에러) */
+    // BLE 광고 성공 또는 진행 중일 경우 정상 속도(500ms), 오류 시 빠르게 깜빡임(120ms)
+    bool ok = (err == 0) || (err == -EALREADY) || (err == -EINPROGRESS);
+    led_period_ms = ok ? 500 : 120;
 
-	/* 필요 시 여기서 Sleep/Wakeup 시퀀스 삽입 */
-	Start_Sleep(next_ms / 1000); // 호출 위치/타이밍 결정
-	Wakeup();
+    /* 5) 다음 주기 설정 (DIP 스위치 설정에 따라 10초 또는 5초) */
+    uint32_t next_ms = g_dip.period ? 10000 : 5000;
 
-	k_work_schedule(&loop_work, K_MSEC(next_ms));
+    if (diag_on())
+    {
+        LOG_INF("loop: sleep=%ums, err=%d, P=%ld x100, T=%d x100, batt=%u%%, DIP{legacy-only, period=%u}",
+                next_ms, err, (long)s.p_value_x100, s.temperature_c_x100, s.battery_pc, g_dip.period);
+    }
+
+    /* Sleep */
+    Start_Sleep(next_ms / 1000); // 다음 스케쥴 관리로 sleep 시간 사용 안함
+    k_work_schedule(&loop_work, K_MSEC(next_ms)); // 다음 루프 작업 예약
 }
 
+/**
+ * @brief 메인 진입점 함수 (Entry Point)
+ *
+ * 시스템 초기화를 수행하고 주기적인 워크큐를 시작합니다.
+ *
+ * @return 항상 0.
+ */
 int main(void)
 {
-	printk("Sensor Board FW boot\n");
-	board_gpio_init();
+    printk("Sensor Board FW boot\n");
+    board_gpio_init();
 
-	uint8_t raw = 0;
-	dip_read_u8(&raw);
-	g_dip = parse_dip(raw);
+    /* DIP 스위치 읽기 */
+    uint8_t raw = 0;
+    dip_read_u8(&raw);
+    g_dip = parse_dip(raw);
 
-	sensors_init();
-	ltc3337_init();
+    /* 하드웨어 초기화 */
+    sensors_init();
+    ltc3337_init();
 
-	/* BLE 초기화 + 인터벌 설정 (레거시 비연결 전용) */
-	Init_Ble();
+    /* BLE 초기화 + 확장 광고 세트 생성 */
+    Init_Ble();
 
-	/* 디버깅 코드 */
-	debug_run_startup();
+    /* 디버깅 코드 실행 */
+    debug_run_startup();
 
-	/* LED HB */
-	k_work_init_delayable(&led_work, led_fn);
-	k_work_schedule(&led_work, K_MSEC(200));
+    /* LED Heartbeat 작업 초기화 및 시작 */
+    k_work_init_delayable(&led_work, led_fn);
+    k_work_schedule(&led_work, K_MSEC(200));
 
-	/* 메인 루프 작업 시작 */
-	k_work_init_delayable(&loop_work, loop_fn);
-	k_work_schedule(&loop_work, K_SECONDS(1));
+    /* 메인 루프 작업 초기화 및 1초 후 시작 */
+    k_work_init_delayable(&loop_work, loop_fn);
+    k_work_schedule(&loop_work, K_SECONDS(1));
 
-	return 0;
+    return 0;
 }

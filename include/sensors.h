@@ -24,3 +24,4 @@ typedef struct {
 
 int read_pressure_0x28(sensor_sample_t *out);
 
+int Get_MCU_Temperature(int8_t *t_c);

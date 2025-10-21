@@ -4,6 +4,7 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/shell/shell.h>
 #include "debug.h"
+#include "app_diag.h"
 #include "dip_switch.h" /* Get_Switch() */
 #include "ble_adv.h"
 #include "sensors.h"
@@ -226,20 +227,10 @@ static int cmd_ble_stop(const struct shell *shell, size_t argc, char **argv)
     return rc;
 }
 
-/* BLE 상태 확인 */
-static int cmd_ble_status(const struct shell *shell, size_t argc, char **argv)
-{
-    ARG_UNUSED(argc);
-    ARG_UNUSED(argv);
-    shell_print(shell, "BLE adv running: %s", Ble_IsRunning() ? "YES" : "NO");
-    return 0;
-}
-
 /* diag ble ... 트리 구성 */
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_ble,
                                SHELL_CMD(start, NULL, "Start BLE advertising (legacy/ext auto).", cmd_ble_start),
                                SHELL_CMD(stop, NULL, "Stop BLE advertising.", cmd_ble_stop),
-                               SHELL_CMD(status, NULL, "Show BLE advertising status.", cmd_ble_status),
                                SHELL_SUBCMD_SET_END);
 
 /* --- GPIO 제어 커맨드 ---------------------------------------- */

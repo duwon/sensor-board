@@ -4,8 +4,8 @@
 #include <zephyr/drivers/adc.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/drivers/sensor.h>
 #include <hal/nrf_saadc.h>
-
 #include <math.h>
 #include <string.h>
 
@@ -214,4 +214,39 @@ int read_pressure_0x28(sensor_sample_t *out)
     int16_t t_raw = ((buf[2] << 8) | (buf[3] & 0xE0)) >> 5;
     out->temperature_c_x100 = (int16_t)((t_raw * 977) / 10 - 5000); /* *100 */
     return 0;
+}
+
+int Get_MCU_Temperature(int8_t *t_c)
+{
+    int err = 0;
+    struct sensor_value temp_val;
+
+    const struct device *const temp_sensor = DEVICE_DT_GET_ANY(nordic_nrf_temp);
+
+    if (!device_is_ready(temp_sensor))
+    {
+        LOG_ERR("Internal Temp sensor not ready!\\n");
+        return -1;
+    }
+
+    // 1. 센서 값 가져오기
+    err = sensor_sample_fetch(temp_sensor);
+    if (err)
+    {
+        LOG_ERR("Temp sensor fetch failed: %d\\n", err);
+        return err;
+    }
+
+    // 2. 채널(온도) 값 가져오기
+    err = sensor_channel_get(temp_sensor, SENSOR_CHAN_DIE_TEMP, &temp_val);
+    if (err)
+    {
+        LOG_ERR("Temp channel get failed: %d\\n", err);
+        return err;
+    }
+
+    *t_c = (int8_t)temp_val.val1;
+
+
+    return err;
 }
