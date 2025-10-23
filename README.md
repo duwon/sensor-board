@@ -1,7 +1,7 @@
 
-# 📘 BLE Sensor Board (Broadcaster) 최신 정리 (2025-10-12 업데이트)
+# 📘 BLE Sensor Board (Broadcaster) 
 
-## 1️⃣ MCU 및 기본 설정 (변동 없음)
+## 1️⃣ MCU 및 기본 설정 
 
 * **MCU:** nRF52833
 * **클럭:** HFXO 32 MHz + LFXO 32.768 kHz
@@ -26,7 +26,6 @@
 | **SOH_ALARM/OK** | P0.09 / P0.10     | 입력    | LTC3337 상태                     |
 | **RESET**        | P0.18             | 입력    | JTAG Reset                     |
 
-> **하드웨어 주의:** 압력센서(0x28)가 I²C 라인을 1.8 V로 끌어내리던 이슈 확인. 제거 시 3 V 정상화 및 0x20(TCA9534), 0x6A(LSM6DSO) 응답 정상. 0x28 사용 시 **3 V 통일** 또는 **양방향 I²C 레벨시프터** 필수.
 
 ---
 
@@ -54,12 +53,12 @@
 
 ---
 
-## 5️⃣ DeviceTree 오버레이 핵심 (오늘 반영 유지)
+## 5️⃣ DeviceTree 오버레이 핵심
 
 * **UART0**: TX=P0.15, RX=P0.17, **HWFC 비활성**
 * **I2C0**: SCL=P0.05, SDA=P0.04, **Fast(400 kHz)**
 * pinctrl 충돌 방지용 라벨 사용(`uart0_my_default/sleep`, `i2c0_default/sleep`) 후 `&uart0`, `&i2c0`에 **명시 바인딩**
-* (선택) 콘솔 고정:
+* 콘솔 고정:
 
   ```dts
   / {
@@ -72,7 +71,7 @@
 
 ---
 
-## 6️⃣ Kconfig (prj.conf) 핵심 (정상 동작 확인된 세트)
+## 6️⃣ Kconfig (prj.conf)
 
 ```conf
 # UART / Shell
@@ -100,7 +99,7 @@ CONFIG_SETTINGS_NVS=y
 
 ---
 
-## 7️⃣ 프로젝트 구조 (업데이트 반영)
+## 7️⃣ 프로젝트 구조
 
 ```
 sensor_board_fw/
@@ -131,7 +130,7 @@ sensor_board_fw/
 
 ---
 
-## 8️⃣ **BLE 스택/광고 개선 사항 **
+## 8️⃣ BLE 스택/광고 ==> 수정 필요
 
 * **MAC 주소 고정:**
   `settings_load()`로 `app/ble_id` 로드 → 없으면 **첫 부팅 시 현 주소 저장** → `bt_id_reset(0, stored)`로 **항상 동일 주소 사용**.
@@ -164,10 +163,10 @@ sensor_board_fw/
 * **기본 명령:**
 
   * `diag echo <text…>`: UART RX 에코
-  * `diag i2c-scan`: I²C 0x03–0x77 스캔
-  * `diag imu-who`: LSM6DSO WHO_AM_I
+  * `diag i2c`: I²C 0x03–0x77 스캔
+  * `diag imu`: LSM6DSO WHO_AM_I
   * `diag dip-read`: EN_RPU on → DIP 읽기/파싱
-  * (선택) `diag ble start/stop`, `diag phy 1m|coded`, `diag period 5|10` 확장 여지
+
 
 ---
 
@@ -178,22 +177,7 @@ sensor_board_fw/
 3. DIP[7]=1이면 Legacy, 0이면 EXT로 광고되는지 확인.
 4. 루프 주기: DIP[5]에 따라 **5 s/10 s**로 Sleep/깨어남 반복되는지.
 5. `diag log off` 시 루프 로그 정지, `diag log on` 시 재개.
-6. `diag i2c-scan`에서 0x20/0x6A 응답 확인, 0x28 사용 시 전압조건 충족 전에는 제거 유지.
-
----
-
-## 1️⃣2️⃣ 할 일
-
-* **sensors.c 마무리**
-  * 압력(0x28) 복귀 전략(3 V/레벨시프터) 반영 + 변환/평균화(윈저라이즈드)
-  * NTC 변환(B3435) 적용, 온도/압력 평균치 산출
-  * LSM6DSO 기본 init + 저속 3축 샘플(필요 시 RMS)
-* **LTC3337 SOH**: OK/ALARM 핀 + I²C 맵 정의, 배터리 % 산출 → 광고 필드 반영
-* **BLE 패킷 포맷** 고도화
-  * **신형 38 B**(확장), DIP[7]=1 시 **Legacy 23 B**
-  * 필드 인덱스/엔디안 최종 고정
-* **스캐너 호환성 스위치**: 스캐너 인식률 저하 시 **Flags-only + Name Short** fallback 토글
-* **쉘 확장**: `diag ble cfg …`, `diag ble sr on/off`, `diag sleep <sec>` 등
+6. `diag i2c`에서 0x20/0x6A 응답 확인, 0x28 사용 시 전압조건 충족 전에는 제거 유지.
 
 ---
 
@@ -211,7 +195,6 @@ west flash
 
 좋습니다. 아래는 지금까지의 **BLE Sensor Board (Broadcaster)** 정리 문서에
 오늘 논의한 **NTC 온도센서 보정 및 동작 내용**을 반영한 최신 버전입니다.
-(기존 섹션 번호 유지하며, 새 섹션 **“1️⃣4️⃣ NTC 온도센서”** 추가됨)
 
 ---
 
@@ -269,7 +252,7 @@ west flash
 | VDD        | 2.18 V   | —                              | SAADC VREF 보정용    |
 | Vout       | 1.18 V   | → Rntc ≈ 8.47 kΩ → T ≈ 29.8 °C | 상온(25 °C 근처)와 근접  |
 | 출력값 (보정 전) | 52.36 °C | —                              | 분압 식 오류로 2배 높게 계산 |
-| 수정 후       | 29.8 °C  | ✅ 정상                           |                   |
+| 수정 후       | 29.8 °C  |  정상                           |                   |
 
 
 ---
@@ -278,33 +261,22 @@ west flash
 
 `diag ntc`
 → `read_ntc_ain1_cx100()` 호출, 결과를 `XX.XX °C` 로 출력.
-예시:
 
 ```
 uart:~$ diag ntc
-NTC temperature: 29.84 °C
+VDD=2927 mV, NTC: 25.43 °C
 ```
 
 ---
 
-### 🔹 향후 개선 예정
 
-| 항목        | 계획                                                    |
-| --------- | ----------------------------------------------------- |
-| VDD 자동 측정 | SAADC 채널 `NRF_SAADC_INPUT_VDD` (VDD/4) 추가 → 실시간 전압 보정 |
-| 보정 상수     | R_pull 실측값(예 9.09 kΩ), NTC 정확 Beta 값 적용               |
-| 오프셋 보정    | 25 °C / 60 °C 2 포인트 교정 테이블 적용                         |
-| 센서 통합     | 압력 / NTC / SOH → 평균값 계산 및 BLE 패킷 필드 반영                |
-
----
-
-##  GPIO Shell 테스트 가이드 (`diag gpio`)
+##  GPIO Shell 테스트 (`diag gpio`)
 
 ###  개요
 
 `diag gpio` 명령은 **BLE Sensor Board (Broadcaster)** 의 주요 전원 및 제어 라인을 UART Shell을 통해 직접 제어하기 위한 디버그 인터페이스
 
-이 기능은 **센서 디버깅 모드**, **전원 시퀀스 검증**, **LED 상태 확인** 등을 펌웨어 수정 없이 UART 콘솔에서 바로 수행할 수 있도록 설계되었다.
+이 기능은 **센서 디버깅 모드**, **전원 시퀀스 검증**, **LED 상태 확인** 등을 펌웨어 수정 없이 UART 콘솔에서 바로 수행.
 
 ---
 
@@ -398,7 +370,7 @@ gpio led on: OK
 
 ---
 
-#### 5️⃣ 전체 시퀀스 예시
+#### 5 전체 시퀀스 예시
 
 아래는 **센서 디버깅용 시퀀스 예시**입니다.
 
@@ -409,4 +381,101 @@ uart:~$ diag gpio sensor on  # 센서 전원 인가
 uart:~$ diag gpio led on     # 상태 LED ON
 uart:~$ diag i2c             # I²C 장치 응답 확인
 uart:~$ diag ntc             # NTC 온도 확인
+```
+
+
+
+좋아요! 문서 흐름 유지해서 **가속도(LSM6DSO) 센서** 섹션을 추가했어. 그대로 붙여넣으면 전체 정리본에 잘 맞습니다.
+
+---
+
+## 1️⃣5️⃣ 가속도 센서 (LSM6DSO)
+
+### 🔹 하드웨어/연결
+
+* **I²C0 @ 0x6A** (SCL=P0.05, SDA=P0.04, 400 kHz)
+* **EN_SENSOR(P0.30)** High → 센서 전원 인가 후 **50–100 ms 안정화** 뒤 초기화 권장
+
+---
+
+### 🔹 동작 모드/설정 (펌웨어 기본값)
+
+* **ODR(Accel): 3.33 kHz** (`CTRL1_XL = 0x98`)
+* **Full Scale: ±4 g** (필요 시 ±16 g로 전환 가능)
+* **Gyro: Power-down**
+* **I3C Disable**, **BDU=1**, **IF_INC=1**
+* **수집 경로:** 현재는 **DRDY 폴링 기반**으로 **정확히 N=999 샘플**(≈0.30 s) 캡처
+  *(FIFO Stop-on-WTM 999워드 버스트는 이후 단계에서 전환 예정)*
+
+---
+
+### 🔹 산출 지표/단위
+
+* **로그 단위:** `x0.01 m/s^2` (정수값 ÷ 100 = m/s²)
+
+  * 예) `123` → **1.23 m/s²** = **1230 mm/s²**
+* **전체대역(시간영역)**: 축별 **Peak** / **RMS**
+* **대역제한(10–1000 Hz)**: FFT→대역 마스킹→iFFT 후 축별 **Peak** / **RMS**
+
+  * **평균(DC) 제거 → Hann 창 적용**으로 누설 최소화
+  * NFFT=1024, fs=3.33 kHz → Δf≈3.25 Hz
+
+---
+
+### 🔹 쉘 명령
+
+| 명령              | 설명                                            |
+| --------------- | --------------------------------------------- |
+| `diag imu who`  | WHO_AM_I 확인(0x6C)                             |
+| `diag imu regs` | 핵심 레지스터 덤프(CTRL1_XL, FIFO_CTRL3/4, DIFF 등)    |
+| `diag imu init` | LSM6DSO 초기화(ODR=3.33k, ±4 g, FIFO=Continuous) |
+| `diag imu once` | **N=999** 샘플 캡처 → 전체/대역 RMS·Peak 출력           |
+| `diag imu loop` | **10초 동안 0.5초 간격**으로 `once` 반복 실행             |
+
+> 메모: `diag imu once`는 시작 시 **FIFO BYPASS**로 전환해 DRDY 직접 읽기를 수행
+> 수행 직후 `diag imu regs`를 보면 `FIFO_CTRL4=0x00, DIFF=0`이 **정상**
+
+---
+
+### 🔹 정상값 가이드(정지 상태 예시)
+
+* **Z축 전체대역 RMS ≈ 9.8 ~ 10.1 m/s²**(중력)
+* **X/Y 전체대역 RMS ≲ 0.1 m/s²** (보드/책상 미세 진동 + 센서 노이즈)
+* **10–1000 Hz RMS**: 정지 시 **수 mm/s² 수준**(0.01–0.5 m/s²)
+
+---
+
+### 🔹 레지스터 기대값(초기화 후)
+
+* `WHO_AM_I=0x6C`
+* `CTRL1_XL=0x98` (ODR=3.33k, ±4 g)
+* `CTRL2_G=0x00` (Gyro PD)
+* `CTRL3_C=0x44` (BDU, IF_INC)
+* `CTRL9_XL=0x02` (I3C disable)
+* `FIFO_CTRL3=0x09` (BDR_XL=3.33k)
+* `FIFO_CTRL4=0x06` (Continuous; **once** 실행 시 일시 BYPASS)
+
+---
+
+### 🔹 알고리즘 (대역 제한)
+
+1. **DC 제거**(샘플 평균 차감)
+2. **Hann 창** 적용 (1024 포인트, 제로패딩 포함)
+3. **rFFT** → **10–1000 Hz** 외 bin **0**
+4. **iFFT** → **재구성된 시간 파형**에서 **RMS/Peak** 계산
+
+장점: PSD 적분/보정 상수 혼동 없이 **직관적 시간영역 통계** 확보.
+
+---
+
+### 🔹 연속 측정 (loop)
+
+```
+uart:~$ diag imu loop
+rc=0, n=999, WHO=0x6C, WTM=1
+ALL  PEAK (x,y,z) = (12,18,1012) x0.01 m/s^2
+ALL  RMS  (x,y,z) = (5,8,1004) x0.01 m/s^2
+10-1000Hz PEAK(x,y,z) = (6,7,15) x0.01 m/s^2
+10-1000Hz RMS (x,y,z) = (2,2,3) x0.01 m/s^2
+... (0.5 s 간격으로 10 s 반복)
 ```
