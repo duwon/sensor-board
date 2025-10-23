@@ -354,6 +354,46 @@ static int cmd_imu_once(const struct shell *shell, size_t argc, char **argv)
     return rc;
 }
 
+static int cmd_imu_loop(const struct shell *shell, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc); ARG_UNUSED(argv);
+
+    const uint32_t duration_ms = 10 * 1000;  /* 총 10초 */
+    const uint32_t interval_ms = 500;        /* 0.5초 간격 */
+    uint32_t t_start = k_uptime_get_32();
+    uint32_t t_next  = t_start;
+
+    while ((k_uptime_get_32() - t_start) < duration_ms) {
+        uint32_t t_iter = k_uptime_get_32();
+
+        lsm6dso_stats_t st = {0};
+        int rc = lsm6dso_capture_once(&st);
+
+        shell_print(shell, "rc=%d, n=%u, WHO=0x%02X, WTM=%d", rc, st.n, st.whoami, st.wtm_reached);
+        if (st.n > 0) {
+            shell_print(shell, "ALL  PEAK (x,y,z) = (%d,%d,%d) x0.01 m/s^2",
+                st.peak_ms2_x100[0], st.peak_ms2_x100[1], st.peak_ms2_x100[2]);
+            shell_print(shell, "ALL  RMS  (x,y,z) = (%d,%d,%d) x0.01 m/s^2",
+                st.rms_ms2_x100[0],  st.rms_ms2_x100[1],  st.rms_ms2_x100[2]);
+            shell_print(shell, "10-1000Hz PEAK(x,y,z) = (%d,%d,%d) x0.01 m/s^2",
+                st.bl_peak_ms2_x100[0], st.bl_peak_ms2_x100[1], st.bl_peak_ms2_x100[2]);
+            shell_print(shell, "10-1000Hz RMS (x,y,z) = (%d,%d,%d) x0.01 m/s^2",
+                st.bl_rms_ms2_x100[0],  st.bl_rms_ms2_x100[1],  st.bl_rms_ms2_x100[2]);
+        }
+
+        /* 0.5초 주기 정렬(측정 시간 포함하여 남은 시간만큼 sleep) */
+        t_next += interval_ms;
+        uint32_t now = k_uptime_get_32();
+        if ((int32_t)(t_next - now) > 0) {
+            k_sleep(K_MSEC(t_next - now));
+        } else {
+            /* 지연이 길어졌으면 다음 슬롯으로 보정 */
+            t_next = now;
+        }
+    }
+    return 0;
+}
+
 static int cmd_imu_regs(const struct shell *shell, size_t argc, char **argv)
 {
     ARG_UNUSED(argc);
@@ -367,6 +407,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_imu,
                                SHELL_CMD(init, NULL, "LSM6DSO init (ODR=3.33k, FS=±4g)", cmd_imu_init),
                                SHELL_CMD(once, NULL, "Capture burst -> peak/rms", cmd_imu_once),
                                SHELL_CMD(regs, NULL, "Dump key IMU/FIFO registers", cmd_imu_regs),
+                               SHELL_CMD(loop, NULL, "10s, every 0.5s capture+print", cmd_imu_loop),
                                SHELL_SUBCMD_SET_END);
 
 /* 서브커맨드 집합 */
