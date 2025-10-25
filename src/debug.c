@@ -424,6 +424,19 @@ static int cmd_imu_test(const struct shell *shell, size_t argc, char **argv)
     return 0;
 }
 
+static int cmd_imu_dump(const struct shell *shell, size_t argc, char **argv)
+{
+    uint16_t bytes = 224;
+    if (argc >= 2) {
+        int v = atoi(argv[1]);
+        if (v > 0) bytes = (uint16_t)v;
+    }
+    int rc = lsm6dso_dump_fifo(shell, bytes);
+    shell_print(shell, "imu dump: rc=%d", rc);
+    return rc;
+}
+
+
 /* 쉘 서브커맨드 등록 */
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_imu,
                                SHELL_CMD(who, NULL, "LSM6DSO WHO_AM_I check", cmd_imu_who),
@@ -432,6 +445,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_imu,
                                SHELL_CMD(once, NULL, "Capture burst -> peak/rms", cmd_imu_once),
                                SHELL_CMD(regs, NULL, "Dump key IMU/FIFO registers", cmd_imu_regs),
                                SHELL_CMD(loop, NULL, "10s, every 0.5s capture+print", cmd_imu_loop),
+                               SHELL_CMD(dump, NULL, "Burst read FIFO RAW+parse [bytes=224]", cmd_imu_dump),
                                SHELL_SUBCMD_SET_END);
 
 /* 서브커맨드 집합 */

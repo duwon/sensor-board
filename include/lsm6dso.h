@@ -7,6 +7,9 @@
 extern "C"
 {
 #endif
+    /* FIFO 진단용 버스트 덤프 (RAW + 파싱 출력) */
+    struct shell;
+    int lsm6dso_dump_fifo(const struct shell *shell, uint16_t bytes_req);
 
     typedef enum
     {

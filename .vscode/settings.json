@@ -3,6 +3,7 @@
         "bluetooth.h": "c",
         "log.h": "c",
         "string.h": "c",
-        "atomic.h": "c"
+        "atomic.h": "c",
+        "lsm6dso.h": "c"
     }
 }
