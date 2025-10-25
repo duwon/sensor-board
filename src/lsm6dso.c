@@ -612,12 +612,32 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out)
     out->n = n;
     out->wtm_reached = (n >= TARGET_N); /* 999개 채웠으면 true */
 
-    /* 통계 계산 */
+    /* 통계 계산 (ALL, DC 제거 후 Peak/RMS) */
     float s = lsm6dso_scale_ms2_per_lsb(LSM6DSO_FS_4G);
-    float sumsq_x = 0, sumsq_y = 0, sumsq_z = 0, peak_x = 0, peak_y = 0, peak_z = 0;
+
+    /* 1) 축별 평균(LSB) 계산 → DC 제거 */
+    float mean_x = 0.f, mean_y = 0.f, mean_z = 0.f;
     for (uint16_t i = 0; i < n; ++i)
     {
-        float fx = g_ax[i] * s, fy = g_ay[i] * s, fz = g_az[i] * s;
+        mean_x += g_ax[i];
+        mean_y += g_ay[i];
+        mean_z += g_az[i];
+    }
+    if (n > 0)
+    {
+        mean_x /= n;
+        mean_y /= n;
+        mean_z /= n;
+    }
+
+    /* 2) DC 제거 후 물리 단위로 변환하여 통계 */
+    float sumsq_x = 0, sumsq_y = 0, sumsq_z = 0;
+    float peak_x = 0, peak_y = 0, peak_z = 0;
+    for (uint16_t i = 0; i < n; ++i)
+    {
+        float fx = ((float)g_ax[i] - mean_x) * s;
+        float fy = ((float)g_ay[i] - mean_y) * s;
+        float fz = ((float)g_az[i] - mean_z) * s;
         float axu = fabsf(fx), ayu = fabsf(fy), azu = fabsf(fz);
         if (axu > peak_x)
             peak_x = axu;

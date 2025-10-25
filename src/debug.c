@@ -360,20 +360,34 @@ static int cmd_imu_loop(const struct shell *shell, size_t argc, char **argv)
 
     const uint32_t duration_ms = 10 * 1000;  /* 총 10초 */
     const uint32_t interval_ms = 500;        /* 0.5초 간격 */
+
     uint32_t t_start = k_uptime_get_32();
     uint32_t t_next  = t_start;
+    uint32_t t_prev_end = t_start;           /* 이전 반복의 “캡처 종료 시점” */
 
     while ((k_uptime_get_32() - t_start) < duration_ms) {
-        uint32_t t_iter = k_uptime_get_32();
+        uint32_t t_before = k_uptime_get_32();
+        uint32_t interval_before_ms = t_before - t_prev_end;
 
         lsm6dso_stats_t st = {0};
-        int rc = lsm6dso_capture_once(&st);
 
-        shell_print(shell, "rc=%d, n=%u, WHO=0x%02X, WTM=%d", rc, st.n, st.whoami, st.wtm_reached);
+        uint32_t t_call0 = k_uptime_get_32();
+        int rc = lsm6dso_capture_once(&st);
+        uint32_t t_call1 = k_uptime_get_32();
+
+        uint32_t capture_ms = t_call1 - t_call0;
+        t_prev_end = t_call1;
+
+        shell_print(shell, "\nloop: interval_before=%ums, capture_ms=%ums",
+                    (unsigned)interval_before_ms, (unsigned)capture_ms);
+
+        shell_print(shell, "rc=%d, n=%u, WHO=0x%02X, WTM=%d",
+                    rc, st.n, st.whoami, st.wtm_reached);
+
         if (st.n > 0) {
-            shell_print(shell, "ALL  PEAK (x,y,z) = (%d,%d,%d) x0.01 m/s^2",
+            shell_print(shell, "ALL PEAK (x,y,z) = (%d,%d,%d) x0.01 m/s^2",
                 st.peak_ms2_x100[0], st.peak_ms2_x100[1], st.peak_ms2_x100[2]);
-            shell_print(shell, "ALL  RMS  (x,y,z) = (%d,%d,%d) x0.01 m/s^2",
+            shell_print(shell, "ALL RMS  (x,y,z) = (%d,%d,%d) x0.01 m/s^2",
                 st.rms_ms2_x100[0],  st.rms_ms2_x100[1],  st.rms_ms2_x100[2]);
             shell_print(shell, "10-1000Hz PEAK(x,y,z) = (%d,%d,%d) x0.01 m/s^2",
                 st.bl_peak_ms2_x100[0], st.bl_peak_ms2_x100[1], st.bl_peak_ms2_x100[2]);
@@ -381,13 +395,12 @@ static int cmd_imu_loop(const struct shell *shell, size_t argc, char **argv)
                 st.bl_rms_ms2_x100[0],  st.bl_rms_ms2_x100[1],  st.bl_rms_ms2_x100[2]);
         }
 
-        /* 0.5초 주기 정렬(측정 시간 포함하여 남은 시간만큼 sleep) */
+        /* 0.5초 주기 정렬 */
         t_next += interval_ms;
         uint32_t now = k_uptime_get_32();
         if ((int32_t)(t_next - now) > 0) {
             k_sleep(K_MSEC(t_next - now));
         } else {
-            /* 지연이 길어졌으면 다음 슬롯으로 보정 */
             t_next = now;
         }
     }
@@ -401,9 +414,20 @@ static int cmd_imu_regs(const struct shell *shell, size_t argc, char **argv)
     return lsm6dso_dump_regs(shell);
 }
 
+static int cmd_imu_test(const struct shell *shell, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc);
+    ARG_UNUSED(argv);
+    cmd_ble_stop(shell, argc, argv);
+    cmd_gpio_sen_on(shell, argc, argv);
+    cmd_imu_init(shell, argc, argv);
+    return 0;
+}
+
 /* 쉘 서브커맨드 등록 */
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_imu,
                                SHELL_CMD(who, NULL, "LSM6DSO WHO_AM_I check", cmd_imu_who),
+                               SHELL_CMD(test, NULL, "LSM6DSO Test start", cmd_imu_test),
                                SHELL_CMD(init, NULL, "LSM6DSO init (ODR=3.33k, FS=±4g)", cmd_imu_init),
                                SHELL_CMD(once, NULL, "Capture burst -> peak/rms", cmd_imu_once),
                                SHELL_CMD(regs, NULL, "Dump key IMU/FIFO registers", cmd_imu_regs),
