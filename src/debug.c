@@ -356,16 +356,18 @@ static int cmd_imu_once(const struct shell *shell, size_t argc, char **argv)
 
 static int cmd_imu_loop(const struct shell *shell, size_t argc, char **argv)
 {
-    ARG_UNUSED(argc); ARG_UNUSED(argv);
+    ARG_UNUSED(argc);
+    ARG_UNUSED(argv);
 
-    const uint32_t duration_ms = 10 * 1000;  /* 총 10초 */
-    const uint32_t interval_ms = 500;        /* 0.5초 간격 */
+    const uint32_t duration_ms = 10 * 1000; /* 총 10초 */
+    const uint32_t interval_ms = 500;       /* 0.5초 간격 */
 
     uint32_t t_start = k_uptime_get_32();
-    uint32_t t_next  = t_start;
-    uint32_t t_prev_end = t_start;           /* 이전 반복의 “캡처 종료 시점” */
+    uint32_t t_next = t_start;
+    uint32_t t_prev_end = t_start; /* 이전 반복의 “캡처 종료 시점” */
 
-    while ((k_uptime_get_32() - t_start) < duration_ms) {
+    while ((k_uptime_get_32() - t_start) < duration_ms)
+    {
         uint32_t t_before = k_uptime_get_32();
         uint32_t interval_before_ms = t_before - t_prev_end;
 
@@ -384,23 +386,27 @@ static int cmd_imu_loop(const struct shell *shell, size_t argc, char **argv)
         shell_print(shell, "rc=%d, n=%u, WHO=0x%02X, WTM=%d",
                     rc, st.n, st.whoami, st.wtm_reached);
 
-        if (st.n > 0) {
+        if (st.n > 0)
+        {
             shell_print(shell, "ALL PEAK (x,y,z) = (%d,%d,%d) x0.01 m/s^2",
-                st.peak_ms2_x100[0], st.peak_ms2_x100[1], st.peak_ms2_x100[2]);
+                        st.peak_ms2_x100[0], st.peak_ms2_x100[1], st.peak_ms2_x100[2]);
             shell_print(shell, "ALL RMS  (x,y,z) = (%d,%d,%d) x0.01 m/s^2",
-                st.rms_ms2_x100[0],  st.rms_ms2_x100[1],  st.rms_ms2_x100[2]);
+                        st.rms_ms2_x100[0], st.rms_ms2_x100[1], st.rms_ms2_x100[2]);
             shell_print(shell, "10-1000Hz PEAK(x,y,z) = (%d,%d,%d) x0.01 m/s^2",
-                st.bl_peak_ms2_x100[0], st.bl_peak_ms2_x100[1], st.bl_peak_ms2_x100[2]);
+                        st.bl_peak_ms2_x100[0], st.bl_peak_ms2_x100[1], st.bl_peak_ms2_x100[2]);
             shell_print(shell, "10-1000Hz RMS (x,y,z) = (%d,%d,%d) x0.01 m/s^2",
-                st.bl_rms_ms2_x100[0],  st.bl_rms_ms2_x100[1],  st.bl_rms_ms2_x100[2]);
+                        st.bl_rms_ms2_x100[0], st.bl_rms_ms2_x100[1], st.bl_rms_ms2_x100[2]);
         }
 
         /* 0.5초 주기 정렬 */
         t_next += interval_ms;
         uint32_t now = k_uptime_get_32();
-        if ((int32_t)(t_next - now) > 0) {
+        if ((int32_t)(t_next - now) > 0)
+        {
             k_sleep(K_MSEC(t_next - now));
-        } else {
+        }
+        else
+        {
             t_next = now;
         }
     }
@@ -411,6 +417,7 @@ static int cmd_imu_regs(const struct shell *shell, size_t argc, char **argv)
 {
     ARG_UNUSED(argc);
     ARG_UNUSED(argv);
+
     return lsm6dso_dump_regs(shell);
 }
 
@@ -427,15 +434,16 @@ static int cmd_imu_test(const struct shell *shell, size_t argc, char **argv)
 static int cmd_imu_dump(const struct shell *shell, size_t argc, char **argv)
 {
     uint16_t bytes = 224;
-    if (argc >= 2) {
+    if (argc >= 2)
+    {
         int v = atoi(argv[1]);
-        if (v > 0) bytes = (uint16_t)v;
+        if (v > 0)
+            bytes = (uint16_t)v;
     }
     int rc = lsm6dso_dump_fifo(shell, bytes);
     shell_print(shell, "imu dump: rc=%d", rc);
     return rc;
 }
-
 
 /* 쉘 서브커맨드 등록 */
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_imu,

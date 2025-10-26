@@ -43,6 +43,17 @@ LOG_MODULE_REGISTER(lsm6dso, LOG_LEVEL_INF);
             return __rc;   \
     } while (0)
 
+#define RC_CHECK(rc) ({ \
+    int __rc = (rc); \
+    if (__rc != 0) { \
+        LOG_ERR("I2C Error: %d at %s:%d", __rc, __func__, __LINE__); \
+        __rc = 1; /* 이 매크로 자체의 반환값 (성공 0, 실패 1) */ \
+    } else { \
+        __rc = 0; \
+    } \
+    __rc; \
+})
+
 /**
  * @name 전역 캡처 버퍼
  * @details
@@ -110,10 +121,10 @@ static const struct device *i2c0 = DEVICE_DT_GET(DT_NODELABEL(i2c0)); /**< I2C0 
 
 /* REG_CTRL1_XL: ODR, FS */
 /**
- * @brief 가속도 ODR: 3.33 kHz (1010b)
- * @note @ref lsm6dso_init 에서는 0x9 (3.33kHz)를 사용합니다.
+ * @brief 가속도 ODR: ODR_FIFO code for 3.33 kHz is 0x0A.
+ * @note @ref lsm6dso_init 에서는 0x9 (3.33kHz)를 사용합니다. 이 값은 [7:3] 비트에 배치되므로 반드시 <<3 해줘야 함!
  */
-#define ODR_XL_3k33 (0x0A << 4)
+#define ODR_FIFO_3k33_SH ((uint8_t)(0x09 << 3))
 #define FS_XL_4G (0x2 << 2)  /**< 가속도 Full-Scale: ±4g (10b) */
 #define FS_XL_16G (0x1 << 2) /**< 가속도 Full-Scale: ±16g (01b) */
 
@@ -121,7 +132,7 @@ static const struct device *i2c0 = DEVICE_DT_GET(DT_NODELABEL(i2c0)); /**< I2C0 
 #define ODR_G_POWER_DOWN (0x0 << 4) /**< 자이로스코프 파워 다운 */
 
 /* FIFO 관련 설정 */
-#define ODR_FIFO_3k33 0x0A /**< FIFO ODR: 3.33 kHz (1010b) */
+// #define ODR_FIFO_3k33 0x0A /**< FIFO ODR: 3.33 kHz (1010b) */
 /**
  * @brief FIFO 가속도 BDR: 3.33 kHz (1010b)
  * @note @ref lsm6dso_init 에서는 0x9 (3.33kHz)를 사용합니다.
@@ -175,6 +186,23 @@ static int rd_u8(uint8_t reg, uint8_t *val)
     return i2c_write_read(i2c0, LSM6DSO_I2C_ADDR, &reg, 1, val, 1);
 }
 
+int rd_u16(uint8_t reg, uint16_t *data_out)
+{
+    uint8_t raw_data[2]; // LSB, MSB 순서로 데이터를 저장할 배열
+    int rc;
+
+    // 1. 레지스터 주소(1바이트)를 쓰고, 2바이트를 읽습니다.
+    rc = i2c_write_read(i2c0, LSM6DSO_I2C_ADDR, &reg, 1, raw_data, 2);
+    if (rc)
+        return rc;
+
+    // 2. Little-Endian 순서로 16비트를 재구성합니다.
+    // LSB (raw_data[0]) + (MSB (raw_data[1]) << 8)
+    *data_out = (uint16_t)raw_data[0] | ((uint16_t)raw_data[1] << 8);
+
+    return 0; // 성공
+}
+
 /**
  * @brief I2C로 연속 블록 읽기
  * @param reg 시작 레지스터 주소
@@ -187,6 +215,31 @@ static int rd_block(uint8_t reg, uint8_t *buf, size_t len)
     return i2c_write_read(i2c0, LSM6DSO_I2C_ADDR, &reg, 1, buf, len);
 }
 /** @} */
+
+static inline int fifo_set_mode(uint8_t mode)
+{
+    /* 항상 ODR=3.33kHz(0x09<<3=0x48) + mode */
+    return wr_u8(REG_FIFO_CTRL5, (uint8_t)(ODR_FIFO_3k33_SH | (mode & 0x07)));
+}
+
+static inline int fifo_expect_ctrl5(const struct shell *sh, uint8_t expect)
+{
+    uint8_t v = 0;
+    int rc = rd_u8(REG_FIFO_CTRL5, &v);
+    if (rc)
+    {
+        if (sh)
+            shell_print(sh, "rd CTRL5 rc=%d", rc);
+        return rc;
+    }
+    if (v != expect)
+    {
+        if (sh)
+            shell_print(sh, "CTRL5 mismatch: got 0x%02X, want 0x%02X", v, expect);
+        return -EIO;
+    }
+    return 0;
+}
 
 /**
  * @brief 주요 레지스터 값을 Zephyr 쉘에 덤프합니다.
@@ -267,17 +320,16 @@ int lsm6dso_init(lsm6dso_fs_t fs)
     RC(wr_u8(REG_CTRL9_XL, CTRL9_XL_I3C_DISABLE));        // I3C disable
     RC(wr_u8(REG_CTRL2_G, ODR_G_POWER_DOWN));             // Gyro off
 
-    /* 타임스탬프 끔 + 가속도만 배치 */
-    RC(wr_u8(REG_CTRL10_C, 0x00));   // TIMESTAMP_EN=0
-    RC(wr_u8(REG_FIFO_CTRL3, 0x09)); // XL@3.33kHz, Gyro=0
-
-    /* 1) FIFO BYPASS로 들어가서 깨끗이 비움 */
-    RC(wr_u8(REG_FIFO_CTRL4, FIFO_MODE_BYPASS)); // MODE=000 (BYPASS)
-    k_sleep(K_MSEC(2));
+    /* 타임스탬프 끄기 + 가속도만 배치 */
+    RC(wr_u8(REG_CTRL10_C, 0x00));   /* TIMESTAMP_EN=0 */
+    RC(wr_u8(REG_FIFO_CTRL3, 0x09)); /* XL only @ 3.33kHz, Gyro off */
 
     /* 2) XL ODR/FS 설정 (3.33 kHz, ±4g) */
-    /* ODR_XL = 1001b (3.33 kHz), FS = 10b (±4g) -> 0x98 */
-    RC(wr_u8(REG_CTRL1_XL, (0x9 << 4) | FS_XL_4G));
+    /* 3.33 kHz, ±4g  (ODR_XL=0b1010, FS=±4g → 0xA8) */
+    RC(wr_u8(REG_CTRL1_XL, 0x98));
+
+    /* 안전하게 BYPASS로 두고 시작 (ODR_FIFO=3.33kHz 설정은 유지) */
+    RC(wr_u8(REG_FIFO_CTRL5, (uint8_t)(ODR_FIFO_3k33_SH | FIFO_MODE_BYPASS)));
 
     /* 3) FIFO 배치 속도(BDR) 설정 — XL만 3.333 kHz로 활성화, Gyro는 0 */
     /* BDR_GY=0000, BDR_XL=1001(3.333 kHz) -> 0x09 */
@@ -289,7 +341,12 @@ int lsm6dso_init(lsm6dso_fs_t fs)
 
     /* 5) FIFO 모드 진입 (Continuous) */
     /* @note lsm6dso_capture_once()는 이 설정을 덮어쓰고 BYPASS(0x00)를 사용함 */
-    RC(wr_u8(REG_FIFO_CTRL4, FIFO_MODE_CONTINUOUS)); // MODE=110 (0x06)
+    RC(wr_u8(REG_FIFO_CTRL5, (uint8_t)(ODR_FIFO_3k33_SH | FIFO_MODE_CONTINUOUS)));
+
+    /* 레지스터 변경이 안되서 재 입력 */
+    RC(wr_u8(REG_CTRL10_C, 0x00));           /* 타임스탬프 OFF */
+    RC(wr_u8(REG_FIFO_CTRL3, 0x09));         /* 가속도만 라우팅 */
+    RC(fifo_set_mode(FIFO_MODE_CONTINUOUS)); /* => CTRL5 = 0x48|0x06 = 0x4E */
 
     return 0;
 }
@@ -639,26 +696,23 @@ static size_t find_sync_7B_loose(const uint8_t *buf, size_t len)
     return 0;
 }
 
-/** @} */ // end of signal_proc
-
 /**
  * @brief 3.33kHz ODR에서 DRDY 폴링을 사용하여 가속도 데이터를 캡처하고 통계를 계산합니다.
  *
  * @details
- * 이 함수는 @ref lsm6dso_init 에서 설정한 FIFO 모드를 무시하고,
- * FIFO를 BYPASS 모드로 직접 설정하여 DRDY(Data Ready) 폴링 방식을 사용합니다.
+ * 이 함수는 FIFO를 BYPASS 모드로 직접 설정하여 DRDY(Data Ready) 폴링 방식을 사용합니다.
  *
  * 1. FIFO를 BYPASS 모드로 설정합니다.
- * 2. 약 330ms 동안 또는 최대 1024개 샘플을 수집할 때까지
- * @ref REG_STATUS_REG 의 XLDA 비트를 폴링(polling)합니다.
- * 3. 새 데이터가 준비되면 @ref REG_OUTX_L_A 부터 6바이트를 읽어
- * @ref g_ax, @ref g_ay, @ref g_az 전역 버퍼에 저장합니다.
+ * 2. 약 330ms 동안 또는 최대 999개 샘플을 수집할 때까지
+ * REG_STATUS_REG (0x1E)의 XLDA 비트(BIT 0)를 폴링(polling)합니다.
+ * 3. 새 데이터(XLDA=1)가 준비되면 REG_OUTX_L_A (0x28)부터 6바이트를 읽어
+ * g_ax, g_ay, g_az 전역 버퍼에 저장합니다.
  * 4. 캡처가 완료되면 전체 대역(Broadband)의 RMS/Peak (m/s^2)를 계산합니다.
- * 5. @ref bandlimited_rms_peak_ms2_x100 를 호출하여
+ * 5. bandlimited_rms_peak_ms2_x100 를 호출하여
  * 10-1000 Hz 대역의 RMS/Peak (m/s^2)를 계산합니다.
- * 6. 모든 결과를 @ref lsm6dso_stats_t 구조체에 채웁니다.
+ * 6. 모든 결과를 lsm6dso_stats_t 구조체에 채웁니다.
  *
- * @param[out] out 통계 결과를 저장할 @ref lsm6dso_stats_t 구조체 포인터
+ * @param[out] out 통계 결과를 저장할 lsm6dso_stats_t 구조체 포인터
  * @return 0 on success (최소 1개 샘플 수집), -EINVAL if out is NULL,
  * -EIO if no samples collected, or I2C 에러 코드.
  */
@@ -668,112 +722,68 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out)
         return -EINVAL;
     memset(out, 0, sizeof(*out));
 
-    /* 0) FIFO 클리어 + 가속도만 배치 + 타임스탬프 비활성 */
-    RC(wr_u8(REG_FIFO_CTRL4, FIFO_MODE_BYPASS));
+    /* 0) FIFO BYPASS 모드로 설정 (ODR_FIFO는 3.33k 유지) */
+    RC(fifo_set_mode(FIFO_MODE_BYPASS));
     k_sleep(K_MSEC(2));
-    RC(wr_u8(REG_CTRL10_C, 0x00));   /* TIMESTAMP_EN=0 */
-    RC(wr_u8(REG_FIFO_CTRL3, 0x09)); /* XL only @3.33kHz */
+    /* BYPASS 모드(0x00) + ODR 3.33k(0x48) = 0x48 확인 */
+    RC(fifo_expect_ctrl5(NULL, (uint8_t)(ODR_FIFO_3k33_SH | FIFO_MODE_BYPASS)));
 
-    /* 1) WTM: 999패킷(= 6993B) → word(2B) 기준 올림 3497 words */
     const uint16_t TARGET_N = 999;
-    const uint16_t WTM_WORDS = 3497;
-    RC(wr_u8(REG_FIFO_CTRL1, (uint8_t)(WTM_WORDS & 0xFF)));
-    RC(wr_u8(REG_FIFO_CTRL2, (uint8_t)((WTM_WORDS >> 8) & 0x0F)));
-
-    /* 2) STOP_ON_WTM | FIFO 진입 */
-    /* 클리어 */
-    RC(wr_u8(REG_FIFO_CTRL5, (ODR_FIFO_3k33 | FIFO_MODE_BYPASS)));
-    k_sleep(K_MSEC(2));
-
-    /* 워터마크 설정 (3497 words ≈ 6994B for 999 packets) */
-    RC(wr_u8(REG_FIFO_CTRL1, (WTM_WORDS & 0xFF)));
-    RC(wr_u8(REG_FIFO_CTRL2, ((WTM_WORDS >> 8) & 0x0F)));
-
-    /* STOP_ON_WTM 설정은 CTRL4, 실제 모드/ODR 설정은 CTRL5 */
-    RC(wr_u8(REG_FIFO_CTRL4, STOP_ON_WTM_BIT));                  // STOP_ON_WTM=1, DEC_TS=0
-    RC(wr_u8(REG_FIFO_CTRL5, (ODR_FIFO_3k33 | FIFO_MODE_FIFO))); // ← 여기서 FIFO 시작!
-
-    /* 3) WTM 대기 */
-    uint32_t need_bytes = (uint32_t)TARGET_N * 7u;
-    for (int tries = 0; tries < 700; ++tries)
-    {
-        uint8_t st[2];
-        RC(i2c_burst_read(i2c0, LSM6DSO_I2C_ADDR, REG_FIFO_STATUS1, st, 2));
-        uint16_t diff_w = ((uint16_t)(st[1] & 0x0F) << 8) | st[0];
-        if ((uint32_t)diff_w * 2u >= need_bytes)
-            break;
-        k_sleep(K_MSEC(1));
-    }
-
-    /* 4) 버스트 드레인: 7B 배수로 읽기, acc-tag(0x01)만 추출 */
     uint16_t n = 0;
-    static uint8_t chunk[420];
-    const uint8_t acc_tag = 0x01; /* 하위 nibble 0x01 */
+    uint8_t raw[6]; /* X,Y,Z (L/H) */
+    uint8_t reg_status = REG_STATUS_REG; /* 0x1E */
+    uint8_t reg_data = REG_OUTX_L_A;     /* 0x28 */
+    uint8_t status_val = 0;
+
+    /* * 1) DRDY 폴링 루프 
+     * 3.33kHz에서 999개 샘플은 약 300ms 소요.
+     * 샘플당 2ms, 전체 600ms의 타임아웃 설정 (I2C 오버헤드 감안).
+     */
+    uint32_t t_start = k_uptime_get_32();
+    const uint32_t CAPTURE_TIMEOUT_MS = 600;
+    const int POLL_TIMEOUT_US = 2000; /* 샘플당 2ms 타임아웃 */
 
     while (n < TARGET_N)
     {
-        /* 비었는지 확인 */
-        uint8_t st2;
-        RC(rd_u8(REG_FIFO_STATUS2, &st2));
-        if (st2 & 0x10)
-            break; /* EMPTY */
+        /* 전체 캡처 타임아웃 확인 */
+        if (k_uptime_get_32() - t_start > CAPTURE_TIMEOUT_MS)
+        {
+            LOG_WRN("DRDY poll timeout: got %u/%u samples", n, TARGET_N);
+            break; 
+        }
 
-        /* 남은 양 → 이번 청크 크기 산정(최대 420B, 7배수) */
-        uint8_t st12[2];
-        RC(i2c_burst_read(i2c0, LSM6DSO_I2C_ADDR, REG_FIFO_STATUS1, st12, 2));
-        uint16_t diff_w = ((uint16_t)(st12[1] & 0x0F) << 8) | st12[0];
-        uint32_t bytes_left = (uint32_t)diff_w * 2u;
-        if (!bytes_left)
+        /* XLDA (Bit 0) 대기 */
+        int poll_retries = POLL_TIMEOUT_US / 10; /* 10us 간격으로 폴링 */
+        status_val = 0;
+        while (poll_retries-- > 0)
+        {
+            RC(rd_u8(reg_status, &status_val));
+            if (status_val & XLDA_BIT)
+                break;
+            k_busy_wait(10); /* 10us 대기 */
+        }
+
+        if (!(status_val & XLDA_BIT))
+        {
+            /* 샘플 1개에 대한 타임아웃 발생 */
+            LOG_WRN("XLDA poll timeout (sample %u)", n);
             break;
-
-        uint16_t bytes_now = (bytes_left > sizeof(chunk)) ? sizeof(chunk) : (uint16_t)bytes_left;
-        bytes_now -= (bytes_now % 7u);
-        if (bytes_now < 7u)
-            bytes_now = 7u;
-
-        uint8_t reg = REG_FIFO_DATA_OUT_TAG; /* 0x78 */
-        RC(i2c_write_read(i2c0, LSM6DSO_I2C_ADDR, &reg, 1, chunk, bytes_now));
-
-        /* 7B 패턴 동기화(느슨) */
-        size_t off = 0; /* 7B 간격 base는 0~6 중 하나 */
-        {
-            /* 가장 처음 나오는 acc_tag 위치를 시작점으로 */
-            bool found = false;
-            for (size_t b = 0; b < 7 && !found; ++b)
-            {
-                for (size_t i = b; i + 7 <= bytes_now; i += 7)
-                {
-                    if ((chunk[i] & 0x0F) == acc_tag)
-                    {
-                        off = b;
-                        found = true;
-                        break;
-                    }
-                }
-            }
         }
 
-        /* acc-tag만 누적 */
-        for (size_t i = off; i + 7 <= bytes_now && n < TARGET_N; i += 7)
-        {
-            if ((chunk[i] & 0x0F) != acc_tag)
-                continue; /* 타 태그 스킵 */
+        /* 2) 데이터 6바이트 읽기 (OUTX_L_A 부터 연속) */
+        RC(rd_block(reg_data, raw, 6));
 
-            int16_t x = (int16_t)((uint16_t)chunk[i + 1] | ((uint16_t)chunk[i + 2] << 8));
-            int16_t y = (int16_t)((uint16_t)chunk[i + 3] | ((uint16_t)chunk[i + 4] << 8));
-            int16_t z = (int16_t)((uint16_t)chunk[i + 5] | ((uint16_t)chunk[i + 6] << 8));
-
-            g_ax[n] = x;
-            g_ay[n] = y;
-            g_az[n] = z;
-            n++;
-        }
+        /* 3) 전역 버퍼에 저장 */
+        g_ax[n] = (int16_t)((uint16_t)raw[0] | ((uint16_t)raw[1] << 8));
+        g_ay[n] = (int16_t)((uint16_t)raw[2] | ((uint16_t)raw[3] << 8));
+        g_az[n] = (int16_t)((uint16_t)raw[4] | ((uint16_t)raw[5] << 8));
+        n++;
     }
 
     out->n = n;
-    out->wtm_reached = (n >= TARGET_N);
+    out->wtm_reached = 0; /* WTM 모드를 사용하지 않았으므로 0 */
 
-    /* 5) DC 제거 후 전체대역 통계 (그대로) */
+    /* 4) DC 제거 후 전체대역 통계 (기존 코드와 동일) */
     float s = lsm6dso_scale_ms2_per_lsb(LSM6DSO_FS_4G);
     float mx = 0, my = 0, mz = 0;
     for (uint16_t i = 0; i < n; ++i)
@@ -811,7 +821,7 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out)
     out->rms_ms2_x100[1] = (int16_t)(ry * 100.f + 0.5f);
     out->rms_ms2_x100[2] = (int16_t)(rz * 100.f + 0.5f);
 
-    /* 6) 10–1000 Hz 대역 제한 (기존 함수 재사용) */
+    /* 5) 10–1000 Hz 대역 제한 (기존 코드와 동일) */
     const float FLO = 10.f, FHI = 1000.f;
     bandlimited_rms_peak_ms2_x100(g_ax, n, s, FLO, FHI, &out->bl_rms_ms2_x100[0], &out->bl_peak_ms2_x100[0]);
     bandlimited_rms_peak_ms2_x100(g_ay, n, s, FLO, FHI, &out->bl_rms_ms2_x100[1], &out->bl_peak_ms2_x100[1]);
@@ -819,8 +829,10 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out)
 
     RC(rd_u8(REG_WHO_AM_I, &out->whoami));
 
-    /* 7) 모드 복구 */
-    RC(wr_u8(REG_FIFO_CTRL4, FIFO_MODE_CONTINUOUS));
+    /* 6) 모드 복구 (lsm6dso_init의 기본 상태인 Continuous로 복구) */
+    RC(fifo_set_mode(FIFO_MODE_CONTINUOUS));
+    RC(fifo_expect_ctrl5(NULL, (uint8_t)(ODR_FIFO_3k33_SH | FIFO_MODE_CONTINUOUS)));
+    
     return (out->n > 0) ? 0 : -EIO;
 }
 
@@ -851,35 +863,53 @@ int lsm6dso_dump_fifo(const struct shell *shell, uint16_t bytes_req)
     if (bytes_req > 420)
         bytes_req = 420; /* 과도한 로그 방지 (최대 60패킷) */
 
-    /* 0) FIFO BYPASS로 비우기 */
-    RC(wr_u8(REG_FIFO_CTRL4, FIFO_MODE_BYPASS));
+    /* 0) 완전 초기화: BYPASS + ODR 설정 고정 */
+    RC(fifo_set_mode(FIFO_MODE_BYPASS));
     k_sleep(K_MSEC(2));
+    RC(wr_u8(REG_CTRL10_C, 0x00));                                                /* TIMESTAMP_EN=0 */
+    RC(wr_u8(REG_FIFO_CTRL3, 0x09));                                              /* XL only @ 3.33kHz */
+    RC(fifo_expect_ctrl5(shell, (uint8_t)(ODR_FIFO_3k33_SH | FIFO_MODE_BYPASS))); /* 기대: 0x48 */
 
-    /* 1) WTM 설정: word(2B) 기준 → bytes_req를 커버하도록 여유있게 */
-    /*   例) 224B → 112word, 여유 64word 추가 */
-    uint16_t wtm_words = (bytes_req / 2) + 64;
+    /* 1) 워터마크 설정 (word 단위) */
+    uint16_t wtm_words = (bytes_req / 2) + 64; /* 224B -> 112 + 여유 */
     RC(wr_u8(REG_FIFO_CTRL1, (uint8_t)(wtm_words & 0xFF)));
     RC(wr_u8(REG_FIFO_CTRL2, (uint8_t)((wtm_words >> 8) & 0x0F)));
 
-    /* 2) STOP_ON_WTM | FIFO 모드 */
-    RC(wr_u8(REG_FIFO_CTRL4, STOP_ON_WTM_BIT | FIFO_MODE_FIFO));
+    /* 2) STOP_ON_WTM 설정(CTRL4) */
+    RC(wr_u8(REG_FIFO_CTRL4, STOP_ON_WTM_BIT));
 
-    /* 3) 대기(WTM 도달 또는 충분히 쌓일 때까지) */
-    uint16_t diff_w = 0;
-    for (int tries = 0; tries < 600; ++tries)
+    /* 3) FIFO 시작 (여기가 진짜 핵심) */
+    RC(fifo_set_mode(FIFO_MODE_FIFO));
+    RC(fifo_expect_ctrl5(shell, (uint8_t)(ODR_FIFO_3k33_SH | FIFO_MODE_FIFO))); /* 기대: 0x49 */
+
+    /* 3.5) 시작 직후 상태 한 번 더 읽어보기(진단) */
+    uint8_t st12[2] = {0};
+    RC(i2c_burst_read(i2c0, LSM6DSO_I2C_ADDR, REG_FIFO_STATUS1, st12, 2));
+    uint16_t diff_w = ((uint16_t)(st12[1] & 0x0F) << 8) | st12[0];
+    if (diff_w == 0)
     {
+        uint8_t c5 = 0, c4 = 0;
+        rd_u8(REG_FIFO_CTRL5, &c5);
+        rd_u8(REG_FIFO_CTRL4, &c4);
+        shell_print(shell, "after start: CTRL5=0x%02X, CTRL4=0x%02X, DIFF=%u", c5, c4, diff_w);
+    }
+
+    /* 4) DIFF 상승 대기 */
+    for (int tries = 0; tries < 600; ++tries)
+    { /* 최대 ~600ms */
         uint8_t st[2];
         RC(i2c_burst_read(i2c0, LSM6DSO_I2C_ADDR, REG_FIFO_STATUS1, st, 2));
         diff_w = ((uint16_t)(st[1] & 0x0F) << 8) | st[0];
-        if (diff_w * 2u >= bytes_req)
-            break;
-        k_sleep(K_MSEC(1));
+        if (diff_w)
+            break; /* 최소 1 word라도 쌓이면 진행 */
+        k_sleep(K_MSEC(2));
     }
     uint32_t bytes_avail = (uint32_t)diff_w * 2u;
+    /* 최소 7B는 읽되, 7의 배수 유지 */
     uint16_t bytes_now = (uint16_t)MIN((uint32_t)bytes_req, bytes_avail);
-    bytes_now -= (bytes_now % 7u);
     if (bytes_now < 7u)
         bytes_now = 7u;
+    bytes_now -= (bytes_now % 7u);
 
     static uint8_t buf[420];
     uint8_t reg = REG_FIFO_DATA_OUT_TAG;
@@ -914,7 +944,8 @@ int lsm6dso_dump_fifo(const struct shell *shell, uint16_t bytes_req)
 
     /* 7) 모드 복구(원하면 Continuous) */
     /* 복구: Continuous @ 3.33kHz */
-    RC(wr_u8(REG_FIFO_CTRL5, (ODR_FIFO_3k33 | FIFO_MODE_CONTINUOUS)));
+    RC(fifo_set_mode(FIFO_MODE_CONTINUOUS));
+    RC(fifo_expect_ctrl5(shell, (uint8_t)(ODR_FIFO_3k33_SH | FIFO_MODE_CONTINUOUS))); /* 기대: 0x4E */
 
     return 0;
 }
