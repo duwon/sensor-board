@@ -26,26 +26,26 @@ LOG_MODULE_REGISTER(app, LOG_LEVEL_INF);
  */
 static struct sensor_adv_data_t mfg_data = {
     // 0xFFFF를 Little Endian으로 변환하여 저장
-    .company_id = sys_cpu_to_le16(0xFFFF),         /* [Index 5-6] Company ID */
-    .structure_version = 0x01,                     /* [Index 7] Version v1 */
-    .model_code = 0x01,                            /* [Index 8] Model Code (Inlet 압력) */
-    
+    .company_id = sys_cpu_to_le16(0xFFFF), /* [Index 5-6] Company ID */
+    .structure_version = 0x01,             /* [Index 7] Version v1 */
+    .model_code = 0x01,                    /* [Index 8] Model Code (Inlet 압력) */
+
     // 상태 관리 정보
-    .device_status = 0x00,                         /* [Index 9] Device Status (정상) */
-    .error_info = 0x00,                            /* [Index 10] Error Info */
-    .mcu_temperature = 25,                         /* [Index 11] MCU Temperature (예: 25°C) */
-    .battery_percent = 95,                         /* [Index 12] Battery % (예: 95%) */
-    .value_presence_mask = 0x01,                   /* [Index 13] Inlet 압력은 Sensor Value 1만 사용 (0b00000001) */
-    
+    .device_status = 0x00,       /* [Index 9] Device Status (정상) */
+    .error_info = 0x00,          /* [Index 10] Error Info */
+    .mcu_temperature = 25,       /* [Index 11] MCU Temperature (예: 25°C) */
+    .battery_percent = 95,       /* [Index 12] Battery % (예: 95%) */
+    .value_presence_mask = 0x01, /* [Index 13] Inlet 압력은 Sensor Value 1만 사용 (0b00000001) */
+
     // 센서 값 (압력 값 10.25 mmH2O를 100배하여 1025로 변환)
-    .sensor_value_1 = sys_cpu_to_le32(1025),       /* [Index 14-17] Sensor Value 1 (압력 값) */
-    
+    .sensor_value_1 = sys_cpu_to_le32(1025), /* [Index 14-17] Sensor Value 1 (압력 값) */
+
     // 나머지 미사용 값은 0x00으로 설정됨
-    .sensor_value_2 = 0,                           /* [Index 18-21] 미사용 */
-    .sensor_value_3 = 0,                           /* [Index 22-25] 미사용 */
-    .sensor_value_4 = 0,                           /* [Index 26-29] 미사용 */
-    .sensor_value_5 = 0,                           /* [Index 30-33] 미사용 */
-    .sensor_value_6 = 0,                           /* [Index 34-37] 미사용 */
+    .sensor_value_2 = 0, /* [Index 18-21] 미사용 */
+    .sensor_value_3 = 0, /* [Index 22-25] 미사용 */
+    .sensor_value_4 = 0, /* [Index 26-29] 미사용 */
+    .sensor_value_5 = 0, /* [Index 30-33] 미사용 */
+    .sensor_value_6 = 0, /* [Index 34-37] 미사용 */
 };
 
 /** @brief 메인 루프 작업을 위한 딜레이 가능 워크 */
@@ -100,14 +100,11 @@ static void get_sensor_data(sensor_sample_t *s)
     s->battery_pc = 100; // LTC3337 등을 통해 실제 배터리 잔량 업데이트 필요
 
     // MCU 온도 및 배터리 업데이트 (8-bit)
-	Get_MCU_Temperature(&mfg_data.mcu_temperature);
-    mfg_data.battery_percent ++; // 예시용 임시 증가 
-
+    Get_MCU_Temperature(&mfg_data.mcu_temperature);
+    mfg_data.battery_percent++; // 예시용 임시 증가
 
     /* NOTE: device_status, error_info 필드는 여기서 오류 정보에 따라 업데이트 필요 */
-    mfg_data.device_status = 0x00; 
-
-	
+    mfg_data.device_status = 0x00;
 }
 
 /**
@@ -121,13 +118,27 @@ static void loop_fn(struct k_work *w)
 {
     Wakeup();
 
+    /* 0) 디버그 코드 */
+    // 버튼 입력 처리
+    btn_evt_t btn = Get_BtnStatus();
+    if (btn == BTN_EVT_LONG)
+    {
+        LOG_INF("Long button press detected - entering hold mode");
+    }
+    else if (btn == BTN_EVT_SHORT)
+    {
+        LOG_INF("Short button press detected - toggling diag mode");
+    }
+    else if (btn == BTN_EVT_NONE)
+    {
+        // 아무 동작 없음
+    }
+
     /* 1) 센서 읽기 */
     sensor_sample_t s = {0};
     get_sensor_data(&s);
 
     /* 2) Manufacturer 패킷 빌드 (정적 구조체 업데이트) */
-    
-
 
     if (app_is_hold()) // BLE 일시정지 상태, 디버깅용
     {
@@ -137,7 +148,7 @@ static void loop_fn(struct k_work *w)
 
     /* 3) 광고 시작/갱신 (브로드캐스트 전용) */
     // mfg_data 구조체(33바이트)와 그 크기를 Tx_Ble에 전달
-    int err = Tx_Ble((const uint8_t *)&mfg_data, sizeof(mfg_data)); 
+    int err = Tx_Ble((const uint8_t *)&mfg_data, sizeof(mfg_data));
 
     /* 4) LED 속도(정상/에러) */
     // BLE 광고 성공 또는 진행 중일 경우 정상 속도(500ms), 오류 시 빠르게 깜빡임(120ms)
@@ -154,7 +165,7 @@ static void loop_fn(struct k_work *w)
     }
 
     /* Sleep */
-    Start_Sleep(next_ms / 1000); // 다음 스케쥴 관리로 sleep 시간 사용 안함
+    Start_Sleep(next_ms / 1000);                  // 다음 스케쥴 관리로 sleep 시간 사용 안함
     k_work_schedule(&loop_work, K_MSEC(next_ms)); // 다음 루프 작업 예약
 }
 
