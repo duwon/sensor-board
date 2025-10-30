@@ -123,11 +123,11 @@ static void loop_fn(struct k_work *w)
     btn_evt_t btn = Get_BtnStatus();
     if (btn == BTN_EVT_LONG)
     {
-        LOG_INF("Long button press detected - entering hold mode");
+        LOG_INF("Long button press detected");
     }
     else if (btn == BTN_EVT_SHORT)
     {
-        LOG_INF("Short button press detected - toggling diag mode");
+        LOG_INF("Short button press detected");
     }
     else if (btn == BTN_EVT_NONE)
     {

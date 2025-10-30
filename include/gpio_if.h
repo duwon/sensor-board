@@ -41,12 +41,6 @@ struct board_gpio
  */
 int board_gpio_init(void);
 
-/** @brief 보드 GPIO 설정 구조체의 포인터를 반환합니다.
- * @see board_gpio_get
- * @return board_gpio 구조체의 상수 포인터
- */
-const struct board_gpio *board_gpio_get(void);
-
 /** @brief LED 핀의 상태를 설정합니다.
  * @see board_led_set
  * @param on true면 켜짐, false면 꺼짐

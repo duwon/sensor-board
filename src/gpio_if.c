@@ -172,16 +172,6 @@ int board_gpio_init(void)
     return 0;
 }
 
-/** @brief 보드 GPIO 설정 구조체의 포인터를 반환합니다.
- * @return board_gpio 구조체의 상수 포인터
- */
-const struct board_gpio *board_gpio_get(void) { return &g_cfg; }
-
-/** @brief LED 핀의 상태를 설정합니다.
- * @param on true면 켜짐, false면 꺼짐
- * @retval 0 성공
- * @retval 음수값 실패 시 Zephyr 에러 코드
- */
 int board_led_set(bool on) { return gpio_pin_set_dt(&g_cfg.led, on); }
 
 /** @brief 버튼 핀의 현재 상태를 가져옵니다.

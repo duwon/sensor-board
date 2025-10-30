@@ -5,7 +5,7 @@
 #include <zephyr/shell/shell.h>
 #include "debug.h"
 #include "app_diag.h"
-#include "dip_switch.h" /* Get_Switch() */
+#include "dip_switch.h"
 #include "ble_adv.h"
 #include "sensors.h"
 #include "gpio_if.h"

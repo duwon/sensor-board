@@ -269,7 +269,7 @@ int read_ntc_ain1_cx100(int16_t *cx100)
     return 0;
 }
 
-/** @brief I2C 압력 센서(0x28, 예: SSC)에서 데이터를 읽고 변환합니다.
+/** @brief I2C 압력 센서(0x28)에서 데이터를 읽고 변환합니다.
  *
  * 4바이트 데이터를 읽고, 브리지 카운트와 온도 카운트를 압력 및 온도로 변환합니다.
  * P_MIN/P_MAX 및 OUTPUT_MIN/OUTPUT_MAX는 사용된 센서의 사양에 맞게 조정해야 합니다.
@@ -285,7 +285,7 @@ int read_pressure_0x28(sensor_sample_t *out)
         return -ENODEV;
     uint8_t buf[4] = {0};
     /* I2C 주소 0x28에서 4바이트 읽기 (commandless read) */
-    int r = i2c_read(i2c0, 0x28, buf, sizeof(buf));
+    int r = i2c_read(i2c0, buf, sizeof(buf), 0x28);
     if (r)
         return r;
 
