@@ -190,8 +190,10 @@ int main(void)
     sensors_init();
     ltc3337_init();
 
-    /* BLE 초기화 + 확장 광고 세트 생성 */
-    Init_Ble();
+    /* BLE 초기화 */
+    Init_Ble(BLE_INIT);
+    Init_Ble(BLE_SCAN_RESPONSE); /* 스캔 응답 설정 */
+    // Init_Ble(BTN_ADV);          /* 확장 광고 설정 */
 
     /* 디버깅 코드 실행 */
     debug_run_startup();
@@ -201,8 +203,8 @@ int main(void)
     k_work_schedule(&led_work, K_MSEC(200));
 
     /* 메인 루프 작업 초기화 및 1초 후 시작 */
-    k_work_init_delayable(&loop_work, loop_fn);
-    k_work_schedule(&loop_work, K_SECONDS(1));
+    // k_work_init_delayable(&loop_work, loop_fn);
+    // k_work_schedule(&loop_work, K_SECONDS(1));
 
     return 0;
 }

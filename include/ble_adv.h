@@ -87,13 +87,24 @@ struct __packed sensor_adv_data_t {
     int32_t sensor_value_6;
 };
 
+/** @enum ble_init_t
+ * @brief ble 초기화 유형
+ */
+typedef enum
+{
+    BLE_INIT = 0,  /**<  BLE 초기화 1번 실행 */
+    BLE_SCAN_RESPONSE = 1, /**< 스캔 응답 */
+    BTN_ADV = 2,  /**< 확장 광고 */
+} ble_init_t;
+
+
 /** @brief BLE 광고 모듈 초기화
  *
  * 블루투스 스택을 활성화하고 확장 광고 세트를 생성합니다.
  *
  * @return 0이면 성공, 음수이면 오류 코드.
  */
-int Init_Ble(void);
+int Init_Ble(ble_init_t init_type);
 
 /** @brief Manufacturer 데이터를 설정하고 1회성 광고를 수행합니다.
  *
