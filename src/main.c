@@ -53,6 +53,13 @@ static struct k_work_delayable loop_work;
 /** @brief DIP 스위치 설정 값 */
 static struct dip_bits g_dip;
 
+/** @brief BLE 상태 값 */
+static enum {
+    BLE_STATE_NONE = 0,
+    BLE_STATE_ADVING,
+    BLE_STATE_SCAN_RSP,
+} ble_state = BLE_STATE_NONE;
+
 /* --------------------------------- LED Heartbeat --------------------------------- */
 
 /** @brief LED Heartbeat 작업을 위한 딜레이 가능 워크 */
@@ -116,25 +123,35 @@ static void get_sensor_data(sensor_sample_t *s)
  */
 static void loop_fn(struct k_work *w)
 {
+    int err = 0;
     Wakeup();
 
-    /* 0) 디버그 코드 */
+    /* 0) BLE 동작 테스트을 위한 디버그 코드 */
+
     // 버튼 입력 처리
     btn_evt_t btn = Get_BtnStatus();
     if (btn == BTN_EVT_LONG)
     {
         LOG_INF("Long button press detected");
         Init_Ble(BLE_SCAN_RESPONSE); /* 스캔 응답 설정 */
-        return;
+        ble_state = BLE_STATE_SCAN_RSP;
     }
     else if (btn == BTN_EVT_SHORT)
     {
         LOG_INF("Short button press detected");
-        Init_Ble(BTN_ADV);          /* 확장 광고 설정 */
+        Init_Ble(BTN_ADV); /* 확장 광고 설정 */
+        ble_state = BLE_STATE_ADVING;
     }
     else if (btn == BTN_EVT_NONE)
     {
         // 아무 동작 없음
+    }
+
+    // 스캔 응답은 다음 확자 광고 진행하지 않음
+    if(ble_state == BLE_STATE_SCAN_RSP)
+    {
+        k_sleep(K_MSEC(50));
+        goto SLEEP;
     }
 
     /* 1) 센서 읽기 */
@@ -143,7 +160,7 @@ static void loop_fn(struct k_work *w)
 
     /* 2) Manufacturer 패킷 빌드 (정적 구조체 업데이트) */
 
-    if (app_is_hold()) // BLE 일시정지 상태, 디버깅용
+    if (app_is_hold()) // BLE 정지, 디버깅용
     {
         k_sleep(K_MSEC(50));
         return;
@@ -151,13 +168,14 @@ static void loop_fn(struct k_work *w)
 
     /* 3) 광고 시작/갱신 (브로드캐스트 전용) */
     // mfg_data 구조체(33바이트)와 그 크기를 Tx_Ble에 전달
-    int err = Tx_Ble((const uint8_t *)&mfg_data, sizeof(mfg_data));
+    err = Tx_Ble((const uint8_t *)&mfg_data, sizeof(mfg_data));
 
     /* 4) LED 속도(정상/에러) */
     // BLE 광고 성공 또는 진행 중일 경우 정상 속도(500ms), 오류 시 빠르게 깜빡임(120ms)
     bool ok = (err == 0) || (err == -EALREADY) || (err == -EINPROGRESS);
     led_period_ms = ok ? 500 : 120;
 
+SLEEP:
     /* 5) 다음 주기 설정 (DIP 스위치 설정에 따라 10초 또는 5초) */
     uint32_t next_ms = g_dip.period ? 10000 : 5000;
 
@@ -195,8 +213,15 @@ int main(void)
 
     /* BLE 초기화 */
     Init_Ble(BLE_INIT);
+    ble_state = BLE_STATE_NONE;
+
+    /* BLE 스캔 응답 모드로 설정 */
     // Init_Ble(BLE_SCAN_RESPONSE); /* 스캔 응답 설정 */
-    Init_Ble(BTN_ADV);          /* 확장 광고 설정 */
+    // ble_state = BLE_STATE_SCAN_RSP;
+
+    /* BLE 확장 광고로 설정 */
+    Init_Ble(BTN_ADV); /* 확장 광고 설정 */
+    ble_state = BLE_STATE_ADVING;
 
     /* 디버깅 코드 실행 */
     debug_run_startup();
