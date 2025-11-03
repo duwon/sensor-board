@@ -147,7 +147,7 @@ static void loop_fn(struct k_work *w)
         // 아무 동작 없음
     }
 
-    // 스캔 응답은 다음 확자 광고 진행하지 않음
+    // 스캔 응답은 다음 확장 광고 진행하지 않음
     if(ble_state == BLE_STATE_SCAN_RSP)
     {
         k_sleep(K_MSEC(50));

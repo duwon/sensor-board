@@ -5,6 +5,7 @@
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/atomic.h>
+#include <hal/nrf_gpio.h>
 
 /** @file gpio_if.c
  * @brief 보드 GPIO 인터페이스 구현 파일
@@ -212,3 +213,31 @@ bool soh_alarm_get(void) { return gpio_pin_get_dt(&g_cfg.soh_alarm); }
  * @return 핀 레벨 상태 (0 또는 1)
  */
 bool soh_ok_get(void) { return gpio_pin_get_dt(&g_cfg.soh_ok); }
+
+/** @brief I2C0 SCL/SDA 핀 번호 (보드에 맞게 수정) */
+#define I2C0_SCL_PIN   4
+#define I2C0_SDA_PIN   5
+
+/**
+ * @brief I2C 라인을 High-Z(입력, NOPULL)로 설정.
+ *
+ * 센서 전원을 끄기 전에 호출해서 SCL/SDA를 플로팅 상태로
+ */
+void i2c_bus_set_hi_z(void)
+{
+    /* 입력 + 풀업/풀다운 없음 = 사실상 Hi-Z */
+    nrf_gpio_cfg_input(I2C0_SCL_PIN, NRF_GPIO_PIN_NOPULL);
+    nrf_gpio_cfg_input(I2C0_SDA_PIN, NRF_GPIO_PIN_NOPULL);
+}
+
+/**
+ * @brief I2C 라인을 기본 상태로 되돌림.
+ *
+ * 센서 전원 켠 후에 호출해서 SCL/SDA를 기본 상태로 복구 
+ */
+void i2c_bus_restore_default(void)
+{
+    /* 리셋 상태(입력, NOPULL)로 되돌림 */
+    nrf_gpio_cfg_default(I2C0_SCL_PIN);
+    nrf_gpio_cfg_default(I2C0_SDA_PIN);
+}
