@@ -4,6 +4,8 @@
         "log.h": "c",
         "string.h": "c",
         "atomic.h": "c",
-        "lsm6dso.h": "c"
+        "lsm6dso.h": "c",
+        "xgzp6897d": "c",
+        "xgzp6897d.h": "c"
     }
 }

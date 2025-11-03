@@ -4,15 +4,6 @@ project(sensor_board_fw)
 
 zephyr_include_directories(include)
 
-target_sources(app PRIVATE
-  src/main.c
-  src/gpio_if.c
-  src/dip_switch.c
-  src/ltc3337.c
-  src/sensors.c
-  src/ble_adv.c
-  src/debug.c
-  src/sleep_if.c
-  src/app_diag.c
-  src/lsm6dso.c
-)
+FILE(GLOB app_sources src/*.c)
+target_sources(app PRIVATE ${app_sources})
+

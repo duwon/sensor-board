@@ -11,6 +11,7 @@
 #include "gpio_if.h"
 #include "lsm6dso.h"
 #include "lsm6dso.h"
+#include "xgzp6897d.h"
 
 LOG_MODULE_REGISTER(app_dbg, LOG_LEVEL_INF);
 
@@ -456,6 +457,28 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_imu,
                                SHELL_CMD(dump, NULL, "Burst read FIFO RAW+parse [bytes=224]", cmd_imu_dump),
                                SHELL_SUBCMD_SET_END);
 
+static int cmd_xgzp_read(const struct shell *sh, size_t argc, char **argv)
+{
+    float p_pa = 0.0f;
+    float t_c = 0.0f;
+
+    int ret = xgzp6897_read_measurement(XGZP6897_RANGE_001K,
+                                        &p_pa,
+                                        &t_c);
+    if (ret == 0)
+    {
+        float p_mmH2O = p_pa / 9.80665f; /* 필요 시 mmH2O로 변환 */
+        LOG_INF("XGZP6897D: P = %.3f Pa (%.3f mmH2O), T = %.2f C",
+                (double)p_pa, (double)p_mmH2O, (double)t_c);
+    }
+    else
+    {
+        LOG_ERR("XGZP6897D read failed, err=%d", ret);
+    }
+
+    return ret;
+}
+
 /* 서브커맨드 집합 */
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_diag,
                                SHELL_CMD(echo, NULL, "echo <text...> (UART RX check)", cmd_echo),
@@ -466,6 +489,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_diag,
                                SHELL_CMD(ntc, NULL, "Read NTC on AIN1 and print temperature", cmd_ntc),
                                SHELL_CMD(gpio, &sub_gpio_root, "GPIO controls", NULL),
                                SHELL_CMD(imu, &sub_imu, "IMU LSM6DSO test", NULL),
+                               SHELL_CMD(p1, NULL, "XGZP6897D001KPDPN (0x58) Read", cmd_xgzp_read),
                                SHELL_SUBCMD_SET_END);
 
 /* 루트 커맨드 등록 */
