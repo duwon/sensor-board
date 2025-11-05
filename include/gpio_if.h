@@ -94,13 +94,3 @@ bool soh_ok_get(void);
  * @return 마지막으로 발생한 버튼 이벤트 (btn_evt_t). 이벤트가 없으면 BTN_EVT_NONE.
  */
 btn_evt_t Get_BtnStatus(void);
-
-/** @brief I2C 라인을 High-Z(입력, NOPULL)로 설정.
- * @see i2c_bus_set_hi_z
- */
-void i2c_bus_set_hi_z(void);
-
-/** @brief I2C 라인을 기본 상태로 되돌림.
- * @see i2c_bus_restore_default
- */
-void i2c_bus_restore_default(void);

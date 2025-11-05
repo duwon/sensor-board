@@ -18,6 +18,7 @@
 #include "debug.h"
 #include "app_diag.h"
 #include "sleep_if.h"
+#include "xgzp6897d.h"
 
 LOG_MODULE_REGISTER(app, LOG_LEVEL_INF);
 
@@ -59,6 +60,43 @@ static enum {
     BLE_STATE_ADVING,
     BLE_STATE_SCAN_RSP,
 } ble_state = BLE_STATE_NONE;
+
+/* --------------------------------- 디버그용 --------------------------------- */
+void debug_run_code(void)
+{
+    
+    // while (1) {
+        power_sensor(true);
+        k_sleep(K_MSEC(10)); // 센서 안정화
+
+        float pressure_pa = 0.0f;
+        float temperature_c = 0.0f;
+
+        /* TODO: 사용 중인 센서 타입으로 바꿔서 테스트
+         * - XGZP6897D001KPDPN : XGZP6897_RANGE_001K
+         * - XGZP6897D010KPDPN : XGZP6897_RANGE_010K
+         */
+        xgzp6897_range_t range = XGZP6897_RANGE_001K;   /* 필요 시 010K로 변경 */
+
+        int ret = xgzp6897_read_measurement(range,
+                                            &pressure_pa,
+                                            &temperature_c);
+        if (ret == 0) {
+            /* Pa → mmH2O 로도 같이 보고 싶으면 아래 변환 사용 */
+            float pressure_mmH2O = pressure_pa / 9.80665f;
+
+            LOG_INF("XGZP6897D: P = %.3f Pa (%.3f mmH2O), T = %.2f C",
+                    (double)pressure_pa,
+                    (double)pressure_mmH2O,
+                    (double)temperature_c);
+        } else {
+            LOG_ERR("xgzp6897_read_measurement failed, err=%d", ret);
+        }
+
+        /* 1초 대기 */
+        k_sleep(K_SECONDS(1));
+    // }
+}
 
 /* --------------------------------- LED Heartbeat --------------------------------- */
 
@@ -125,7 +163,6 @@ static void loop_fn(struct k_work *w)
 {
     int err = 0;
     Wakeup();
-
     /* 0) BLE 동작 테스트을 위한 디버그 코드 */
 
     // 버튼 입력 처리
@@ -157,6 +194,8 @@ static void loop_fn(struct k_work *w)
     /* 1) 센서 읽기 */
     sensor_sample_t s = {0};
     get_sensor_data(&s);
+
+    debug_run_code();
 
     /* 2) Manufacturer 패킷 빌드 (정적 구조체 업데이트) */
 
@@ -202,27 +241,29 @@ int main(void)
     printk("Sensor Board FW boot\n");
     board_gpio_init();
 
+    
     /* DIP 스위치 읽기 */
     uint8_t raw = 0;
     dip_read_u8(&raw);
     g_dip = parse_dip(raw);
-
+    
     /* 하드웨어 초기화 */
     sensors_init();
     ltc3337_init();
+    
 
     /* BLE 초기화 */
     Init_Ble(BLE_INIT);
     ble_state = BLE_STATE_NONE;
-
+    
     /* BLE 스캔 응답 모드로 설정 */
     // Init_Ble(BLE_SCAN_RESPONSE); /* 스캔 응답 설정 */
     // ble_state = BLE_STATE_SCAN_RSP;
-
+    
     /* BLE 확장 광고로 설정 */
     Init_Ble(BTN_ADV); /* 확장 광고 설정 */
     ble_state = BLE_STATE_ADVING;
-
+    
     /* 디버깅 코드 실행 */
     debug_run_startup();
 
