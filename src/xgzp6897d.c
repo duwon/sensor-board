@@ -174,7 +174,7 @@ int xgzp6897_read_measurement(xgzp6897_range_t range_type, float *pressure_pa, f
         temperature_ad = ((uint32_t)t_h << 8) | ((uint32_t)t_l);
 
         int32_t inter_t = (int32_t)temperature_ad;
-        if (inter_t > 32768)
+        if (inter_t >= 32768)
         {
             inter_t -= 65536;
         }
@@ -239,7 +239,7 @@ int xgzp6897_read_measurement(xgzp6897_range_t range_type, float *pressure_pa, f
  * @param temperature_c 마지막으로 측정된 온도 값(℃)을 저장할 float 포인터. NULL이면 온도 측정 건너뜀.
  * @return 0 성공. 음수 값은 오류 코드 (-EINVAL, 또는 xgzp6897_read_measurement의 오류 코드).
  */
-int read_pressure_filtered(xgzp6897_range_t range_type, float *pressure_pa, float *temperature_c)
+int read_xgzp6897_filtered(xgzp6897_range_t range_type, float *pressure_pa, float *temperature_c)
 {
     // pressure_pa는 필터링된 결과를 반환해야 하므로 NULL일 수 없음
     if (pressure_pa == NULL)

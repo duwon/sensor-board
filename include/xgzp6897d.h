@@ -51,7 +51,7 @@ extern "C"
      * @retval -EINVAL   파라미터 오류
      * @retval <0        I2C 통신 에러 (Zephyr errno)
      */
-    int read_pressure_filtered(xgzp6897_range_t range_type, float *pressure_pa, float *temperature_c);
+    int read_xgzp6897_filtered(xgzp6897_range_t range_type, float *pressure_pa, float *temperature_c);
 
 #ifdef __cplusplus
 }

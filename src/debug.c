@@ -12,6 +12,7 @@
 #include "lsm6dso.h"
 #include "lsm6dso.h"
 #include "xgzp6897d.h"
+#include "xgzp6847d.h"
 
 LOG_MODULE_REGISTER(app_dbg, LOG_LEVEL_INF);
 
@@ -108,11 +109,35 @@ static int cmd_echo(const struct shell *sh, size_t argc, char **argv)
 
 static int cmd_i2c_scan(const struct shell *sh, size_t argc, char **argv)
 {
-    ARG_UNUSED(argc);
-    ARG_UNUSED(argv);
-    int r = i2c_bus_scan();
-    shell_print(sh, "i2c_scan ret=%d", r);
-    return r;
+    // ARG_UNUSED(argc);
+    // ARG_UNUSED(argv);
+
+    if (argc < 2)
+    {
+        int r = i2c_bus_scan();
+        shell_print(sh, "i2c_scan ret=%d", r);
+        return r;
+    }
+
+    if (strcmp(argv[1], "read") == 0)
+    {
+        uint8_t temp_test = 0;
+        uint8_t addr = (uint8_t)strtoul(argv[2], NULL, 16);
+        uint8_t reg = (uint8_t)strtoul(argv[3], NULL, 16);
+
+        int ret = i2c_reg_read_byte(i2c0_dev, addr, reg, &temp_test);
+        if (ret < 0)
+        {
+            shell_print(sh, "read addr 0x%02X reg 0x%02X failed (err %d)", addr, reg, ret);
+            return ret;
+        }
+        else
+        {
+            shell_print(sh, "read addr 0x%02X reg 0x%02X = 0x%02X", addr, reg, temp_test);
+        }
+    }
+
+    return 0;
 }
 
 static int cmd_imu_who(const struct shell *sh, size_t argc, char **argv)
@@ -464,10 +489,24 @@ static int cmd_xgzp_read(const struct shell *sh, size_t argc, char **argv)
 
     // int ret = xgzp6897_read_measurement(XGZP6897_RANGE_010K, &p_pa, &t_c);
     int ret = 0;
-    
-    if (strcmp(argv[0], "p1") == 0) read_pressure_filtered(XGZP6897_RANGE_001K, &p_pa, &t_c);
-    else if (strcmp(argv[0], "p2") == 0) read_pressure_filtered(XGZP6897_RANGE_010K, &p_pa, &t_c);    
-    
+
+    if (strcmp(argv[0], "p1") == 0)
+        read_xgzp6897_filtered(XGZP6897_RANGE_001K, &p_pa, &t_c);
+    else if (strcmp(argv[0], "p2") == 0)
+        read_xgzp6897_filtered(XGZP6897_RANGE_010K, &p_pa, &t_c);
+    else if (strcmp(argv[0], "p3") == 0)
+    {
+        /* Calibaration 적용 */
+        if (strcmp(argv[1], "offset") == 0)
+        {
+            set_calibration_xgzp6847(XGZP6847_RANGE_001MPGPN);
+        }
+        else
+            read_xgzp6847_filtered(XGZP6847_RANGE_001MPGPN, &p_pa, &t_c, true);
+    }
+    else
+        ret = -EINVAL;
+
     if (ret == 0)
     {
         float p_mmH2O = p_pa / 9.80665f; /* 필요 시 mmH2O로 변환 */
@@ -494,6 +533,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_diag,
                                SHELL_CMD(imu, &sub_imu, "IMU LSM6DSO test", NULL),
                                SHELL_CMD(p1, NULL, "XGZP6897D001KPDPN (0x58) Read", cmd_xgzp_read),
                                SHELL_CMD(p2, NULL, "XGZP6897D100KPDPN (0x58) Read", cmd_xgzp_read),
+                               SHELL_CMD(p3, NULL, "XGZP6847DC001MPGPN (0x6D) Read", cmd_xgzp_read),
                                SHELL_SUBCMD_SET_END);
 
 /* 루트 커맨드 등록 */
