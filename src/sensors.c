@@ -9,6 +9,7 @@
 #include <hal/nrf_saadc.h>
 #include <math.h>
 #include <string.h>
+#include "filter_winsor.h"
 
 /** @file sensors.c
  * @brief 보드에 연결된 각종 센서(ADC, I2C)를 제어하고 값을 읽는 함수 구현.
@@ -266,6 +267,25 @@ int read_ntc_ain1_cx100(int16_t *cx100)
         t_cx100 = INT16_MIN;
 
     *cx100 = (int16_t)t_cx100;
+    return 0;
+}
+
+int read_ntc(int16_t *temperature)
+{
+    float temp_samples[WINSOR_SAMPLES_TOTAL];
+    for (uint32_t i = 0; i < WINSOR_SAMPLES_TOTAL; i++)
+    {
+        uint16_t temp_cx100 = 0;
+        read_ntc_ain1_cx100(&temp_cx100);
+        temp_samples[i] = ((float)temp_cx100) / 100.0f;
+        if (i + 1 < WINSOR_SAMPLES_TOTAL)
+            k_msleep(3);
+    }
+
+    float temp_filtered;
+    winsor_mean_10f(temp_samples, &temp_filtered);
+
+    *temperature =  (int)lroundf(temp_filtered * 100.0f);
     return 0;
 }
 

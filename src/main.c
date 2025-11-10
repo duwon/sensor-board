@@ -78,7 +78,7 @@ void debug_run_code(void)
          */
         xgzp6897_range_t range = XGZP6897_RANGE_001K;   /* 필요 시 010K로 변경 */
 
-        int ret = xgzp6897_read_measurement(range,
+        int ret = read_pressure_filtered(range,
                                             &pressure_pa,
                                             &temperature_c);
         if (ret == 0) {

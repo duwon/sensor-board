@@ -37,9 +37,21 @@ extern "C"
      * @retval -EINVAL   파라미터 오류
      * @retval <0        I2C 통신 에러 (Zephyr errno)
      */
-    int xgzp6897_read_measurement(xgzp6897_range_t range_type,
-                                  float *pressure_pa,
-                                  float *temperature_c);
+    int xgzp6897_read_measurement(xgzp6897_range_t range_type, float *pressure_pa, float *temperature_c);
+
+    /**
+     * @brief XGZP6897D 센서 Winsorized 평균 필터 적용 측정
+     *
+     * @param range_type   센서 압력 범위 타입
+     * @param[out] pressure_pa   측정된 압력 값 (단위: Pa, NULL이면 무시)
+     * @param[out] temperature_c 측정된 온도 값 (단위: ℃, NULL이면 무시)
+     *
+     * @retval 0         성공
+     * @retval -ENODEV   I2C 디바이스 미준비
+     * @retval -EINVAL   파라미터 오류
+     * @retval <0        I2C 통신 에러 (Zephyr errno)
+     */
+    int read_pressure_filtered(xgzp6897_range_t range_type, float *pressure_pa, float *temperature_c);
 
 #ifdef __cplusplus
 }

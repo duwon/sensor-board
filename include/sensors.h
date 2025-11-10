@@ -30,6 +30,8 @@ int read_vdd_mv(int16_t *vdd_mv);
  */
 int read_ntc_ain1_cx100(int16_t *cx100);
 
+int read_ntc(int16_t *temperature);
+
 /** @struct sensor_sample_t
  * @brief 여러 센서 측정값을 통합하여 저장하는 구조체
  */

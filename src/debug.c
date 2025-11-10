@@ -182,7 +182,7 @@ static int cmd_ntc(const struct shell *sh, size_t argc, char **argv)
         shell_error(sh, "VDD read failed: %d", rc);
         return rc;
     }
-    rc = read_ntc_ain1_cx100(&cx100);
+    rc = read_ntc(&cx100);
     if (rc)
     {
         shell_error(sh, "NTC read failed: %d", rc);
@@ -462,9 +462,12 @@ static int cmd_xgzp_read(const struct shell *sh, size_t argc, char **argv)
     float p_pa = 0.0f;
     float t_c = 0.0f;
 
-    int ret = xgzp6897_read_measurement(XGZP6897_RANGE_001K,
-                                        &p_pa,
-                                        &t_c);
+    // int ret = xgzp6897_read_measurement(XGZP6897_RANGE_010K, &p_pa, &t_c);
+    int ret = 0;
+    
+    if (strcmp(argv[0], "p1") == 0) read_pressure_filtered(XGZP6897_RANGE_001K, &p_pa, &t_c);
+    else if (strcmp(argv[0], "p2") == 0) read_pressure_filtered(XGZP6897_RANGE_010K, &p_pa, &t_c);    
+    
     if (ret == 0)
     {
         float p_mmH2O = p_pa / 9.80665f; /* 필요 시 mmH2O로 변환 */
@@ -490,6 +493,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_diag,
                                SHELL_CMD(gpio, &sub_gpio_root, "GPIO controls", NULL),
                                SHELL_CMD(imu, &sub_imu, "IMU LSM6DSO test", NULL),
                                SHELL_CMD(p1, NULL, "XGZP6897D001KPDPN (0x58) Read", cmd_xgzp_read),
+                               SHELL_CMD(p2, NULL, "XGZP6897D100KPDPN (0x58) Read", cmd_xgzp_read),
                                SHELL_SUBCMD_SET_END);
 
 /* 루트 커맨드 등록 */
