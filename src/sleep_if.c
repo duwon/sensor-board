@@ -90,6 +90,8 @@ int Start_Sleep(uint32_t seconds)
 
 int Wakeup(void)
 {
+    LOG_INF("Woken up");
+    
     /* 1) 전원 레일 복구 (순서/안정화 지연) */
     power_rpu(true);
     k_sleep(K_MSEC(2)); // RPU 안정화
@@ -97,6 +99,6 @@ int Wakeup(void)
     k_sleep(K_MSEC(5));        // 센서 안정화
     i2c_bus_restore_default(); // I2C 라인 복구
 
-    LOG_INF("Woken up, interfaces re-enabled");
+    LOG_INF("Interfaces re-enabled");
     return 0;
 }

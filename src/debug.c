@@ -13,6 +13,7 @@
 #include "lsm6dso.h"
 #include "xgzp6897d.h"
 #include "xgzp6847d.h"
+#include "ssc_pressure.h"
 
 LOG_MODULE_REGISTER(app_dbg, LOG_LEVEL_INF);
 
@@ -520,6 +521,51 @@ static int cmd_xgzp_read(const struct shell *sh, size_t argc, char **argv)
 
     return ret;
 }
+static int cmd_ssc_read(const struct shell *sh, size_t argc, char **argv)
+{
+    float p_bar = 0.0f;
+    float p_mmH2O = 0.0f;
+    float p_pa = 0.0f;
+    float t_c = 0.0f;
+
+    int ret = 0;
+
+    /* Calibaration 적용 */
+    if (strcmp(argv[1], "offset") == 0)
+    {
+    }
+
+    if (strcmp(argv[0], "p4") == 0)
+    {
+        read_ssc_filtered(SSCDJNN010BA2A3, &p_bar, &t_c);
+        p_pa  = p_bar * 100000.0f;  // Pa 단위로 변환
+    }
+    else if (strcmp(argv[0], "p5") == 0)
+    {
+        read_ssc_filtered(SSCDJNN100MD2A3, &p_mmH2O, &t_c);
+        p_pa = p_mmH2O * 9.80665f;  // Pa 단위로 변환
+    }
+    else if (strcmp(argv[0], "p6") == 0)
+    {
+        read_ssc_filtered(SSCDJNN002ND2A3, &p_mmH2O, &t_c);
+        p_pa = p_mmH2O * 9.80665f;  // Pa 단위로 변환
+    }
+    else
+        ret = -EINVAL;
+
+    if (ret == 0)
+    {
+        float p_mmH2O = p_pa / 9.80665f; /* 필요 시 mmH2O로 변환 */
+        LOG_INF("SSC Pressure: P = %.3f Pa (%.3f mmH2O), T = %.2f C",
+                (double)p_pa, (double)p_mmH2O, (double)t_c);
+    }
+    else
+    {
+        LOG_ERR("SSC Pressure read failed, err=%d", ret);
+    }
+
+    return ret;
+}
 
 /* 서브커맨드 집합 */
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_diag,
@@ -534,6 +580,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_diag,
                                SHELL_CMD(p1, NULL, "XGZP6897D001KPDPN (0x58) Read", cmd_xgzp_read),
                                SHELL_CMD(p2, NULL, "XGZP6897D100KPDPN (0x58) Read", cmd_xgzp_read),
                                SHELL_CMD(p3, NULL, "XGZP6847DC001MPGPN (0x6D) Read", cmd_xgzp_read),
+                               SHELL_CMD(p4, NULL, "SSCDJNN010BA2A3 (0x28) Read", cmd_ssc_read),
+                               SHELL_CMD(p5, NULL, "SSCDJNN100MD2A3 (0x28) Read", cmd_ssc_read),
+                               SHELL_CMD(p6, NULL, "SSCDJNN002ND2A3 (0x28) Read", cmd_ssc_read),
                                SHELL_SUBCMD_SET_END);
 
 /* 루트 커맨드 등록 */
