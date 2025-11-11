@@ -5,6 +5,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/i2c.h>
 #include <zephyr/logging/log.h>
+#include <stdbool.h>
 
 #include "xgzp6897d.h"
 #include "filter_winsor.h"
@@ -28,6 +29,9 @@ LOG_MODULE_REGISTER(xgzp6897d, LOG_LEVEL_INF);
 
 /* I2C0 핸들 */
 static const struct device *i2c0_dev = DEVICE_DT_GET(DT_NODELABEL(i2c0));
+
+/* 압력 오프셋(Pa). 보정 전에는 0.0f */
+static float s_pressure_offset_pa = 0.0f;
 
 /* 내부 헬퍼: 1바이트 레지스터 읽기 */
 static int xgzp_read_reg(const struct device *i2c, uint16_t addr, uint8_t reg, uint8_t *val)
@@ -239,8 +243,10 @@ int xgzp6897_read_measurement(xgzp6897_range_t range_type, float *pressure_pa, f
  * @param temperature_c 마지막으로 측정된 온도 값(℃)을 저장할 float 포인터. NULL이면 온도 측정 건너뜀.
  * @return 0 성공. 음수 값은 오류 코드 (-EINVAL, 또는 xgzp6897_read_measurement의 오류 코드).
  */
-int read_xgzp6897_filtered(xgzp6897_range_t range_type, float *pressure_pa, float *temperature_c)
+int read_xgzp6897_filtered(xgzp6897_range_t range_type, float *pressure_pa, float *temperature_c, bool apply_offset)
 {
+    int ret = 0;
+
     // pressure_pa는 필터링된 결과를 반환해야 하므로 NULL일 수 없음
     if (pressure_pa == NULL)
         return -EINVAL;
@@ -266,5 +272,34 @@ int read_xgzp6897_filtered(xgzp6897_range_t range_type, float *pressure_pa, floa
     }
 
     /* 2) 윈저라이즈드 평균 필터 적용 */
-    return winsor_mean_10f(samples, pressure_pa);
+    winsor_mean_10f(samples, pressure_pa);
+
+    /* 3) offset 적용 여부 */
+    if (ret == 0 && pressure_pa)
+    {
+        *pressure_pa -= s_pressure_offset_pa;
+    }
+
+    return 0;
+}
+
+int set_calibration_xgzp6897(xgzp6897_range_t range_type)
+{
+    float p_pa = 0.0f;
+    int ret = read_xgzp6897_filtered(range_type, &p_pa, NULL, false);
+    if (ret < 0)
+    {
+        LOG_ERR("XGZP6897D: calibration read failed (err %d)", ret);
+        return ret;
+    }
+
+    s_pressure_offset_pa = p_pa;
+    LOG_INF("XGZP6897D: calibration offset set to %.3f Pa", (double)s_pressure_offset_pa);
+    return 0;
+}
+
+void clear_calibration_xgzp6897(void)
+{
+    s_pressure_offset_pa = 0.0f;
+    LOG_INF("XGZP6897D: calibration offset cleared");
 }

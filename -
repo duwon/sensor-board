@@ -1,9 +1,9 @@
 /**
  * @file
- * @brief ì§„ë‹¨/ë””ë²„ê·¸ ëª…ë ¹ê³¼ í—¬í¼ êµ¬í˜„
+ * @brief ì§„ë‹¨/?”ë²„ê·?ëª…ë ¹ê³??¬í¼ êµ¬í˜„
  *
- * - I2C ë²„ìŠ¤ ìŠ¤ìº”, ì¥ì¹˜ í”„ë¡œë¸Œ, ê°ì¢… ì‰˜ ì»¤ë§¨ë“œ ë“±ë¡
- * - ë¶€íŒ… ì§í›„ ê°„ë‹¨í•œ í•˜ë“œì›¨ì–´ í™•ì¸ ë£¨í‹´ ì œê³µ
+ * - I2C ë²„ìŠ¤ ?¤ìº”, ?¥ì¹˜ ?„ë¡œë¸? ê°ì¢… ??ì»¤ë§¨???±ë¡
+ * - ë¶€??ì§í›„ ê°„ë‹¨???˜ë“œ?¨ì–´ ?•ì¸ ë£¨í‹´ ?œê³µ
  */
 #include <zephyr/device.h>
 #include <zephyr/drivers/i2c.h>
@@ -28,7 +28,7 @@
 
 LOG_MODULE_REGISTER(app_dbg, LOG_LEVEL_INF);
 
-/* I2C0 í•¸ë“¤ */
+/* I2C0 ?¸ë“¤ */
 static const struct device *i2c0_dev = DEVICE_DT_GET(DT_NODELABEL(i2c0));
 
 #if IS_ENABLED(CONFIG_SHELL)
@@ -39,14 +39,14 @@ static int cmd_dip_read(const struct shell *sh, size_t argc, char **argv);
 static int cmd_log_sw(const struct shell *sh, size_t argc, char **argv);
 #endif
 
-/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
- * I2C ì „ì²´ ìŠ¤ìº” (0x03~0x77)
- *  - íŠ¸ëœì­ì…˜ ëª…í™•íˆ ë³´ì´ë„ë¡ write_read ì‚¬ìš© (0ë°”ì´íŠ¸ write íšŒí”¼)
- * â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€*/
+/* ?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€
+ * I2C ?„ì²´ ?¤ìº” (0x03~0x77)
+ *  - ?¸ëœ??…˜ ëª…í™•??ë³´ì´?„ë¡ write_read ?¬ìš© (0ë°”ì´??write ?Œí”¼)
+ * ?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€*/
 /**
- * @brief I2C0 ë²„ìŠ¤ ì£¼ì†Œ ìŠ¤ìº”(0x03..0x77)
- * @retval 0 ì„±ê³µ
- * @retval -ENODEV I2C ë””ë°”ì´ìŠ¤ ì¤€ë¹„ ì•ˆë¨
+ * @brief I2C0 ë²„ìŠ¤ ì£¼ì†Œ ?¤ìº”(0x03..0x77)
+ * @retval 0 ?±ê³µ
+ * @retval -ENODEV I2C ?”ë°”?´ìŠ¤ ì¤€ë¹??ˆë¨
  */
 int i2c_bus_scan(void)
 {
@@ -61,7 +61,7 @@ int i2c_bus_scan(void)
     uint8_t val = 0;
     for (uint8_t addr = 0x03; addr <= 0x77; addr++)
     {
-        /* ë ˆì§€ìŠ¤í„° ì—†ëŠ” ë””ë°”ì´ìŠ¤ë„ ìˆì–´ ì½ê¸°ë§Œ ì‹œë„ â†’ ë§ì€ ê²½ìš° NACK í—ˆìš© */
+        /* ?ˆì??¤í„° ?†ëŠ” ?”ë°”?´ìŠ¤???ˆì–´ ?½ê¸°ë§??œë„ ??ë§ì? ê²½ìš° NACK ?ˆìš© */
         int r = i2c_write_read(i2c0_dev, addr, &reg, 1, &val, 1);
         if (r == 0)
         {
@@ -73,18 +73,18 @@ int i2c_bus_scan(void)
     return 0;
 }
 
-/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
- * LSM6DSO WHO_AM_I í™•ì¸ (0x6A)
- * â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€*/
+/* ?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€
+ * LSM6DSO WHO_AM_I ?•ì¸ (0x6A)
+ * ?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€*/
 #define LSM6DSO_ADDR 0x6A
 #define WHO_AM_I 0x0F
 #define LSM6DSO_ID 0x6C
 
 /**
- * @brief LSM6DSO WHO_AM_I ë ˆì§€ìŠ¤í„° í™•ì¸
- * @retval 0 ì„±ê³µ(ê¸°ëŒ€ ì•„ì´ë””)
- * @retval -ENODEV I2C ë””ë°”ì´ìŠ¤ ì¤€ë¹„ ì•ˆë¨
- * @retval ìŒìˆ˜ê°’ í†µì‹ /ì•„ì´ë”” ë¶ˆì¼ì¹˜ ì˜¤ë¥˜
+ * @brief LSM6DSO WHO_AM_I ?ˆì??¤í„° ?•ì¸
+ * @retval 0 ?±ê³µ(ê¸°ë? ?„ì´??
+ * @retval -ENODEV I2C ?”ë°”?´ìŠ¤ ì¤€ë¹??ˆë¨
+ * @retval ?Œìˆ˜ê°??µì‹ /?„ì´??ë¶ˆì¼ì¹??¤ë¥˜
  */
 int lsm6dso_probe(void)
 {
@@ -102,29 +102,29 @@ int lsm6dso_probe(void)
     return (id == LSM6DSO_ID) ? 0 : -EIO;
 }
 
-/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
- * ë¶€íŒ… ì§í›„ í•œ ë²ˆ í˜¸ì¶œí•´ ì‚¬ìš©í•˜ëŠ” ë””ë²„ê·¸ ëŸ¬ë„ˆ
- * â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€*/
+/* ?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€
+ * ë¶€??ì§í›„ ??ë²??¸ì¶œ???¬ìš©?˜ëŠ” ?”ë²„ê·??¬ë„ˆ
+ * ?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€*/
 /**
- * @brief ë¶€íŒ… ì§í›„ í•œ ë²ˆ í˜¸ì¶œí•˜ëŠ” ê°„ë‹¨ ë””ë²„ê·¸ ëŸ°ë„ˆ
+ * @brief ë¶€??ì§í›„ ??ë²??¸ì¶œ?˜ëŠ” ê°„ë‹¨ ?”ë²„ê·??°ë„ˆ
  */
 void debug_run_startup(void)
 {
-    /* I2C ë””ë°”ê·¸ */
+    /* I2C ?”ë°”ê·?*/
     i2c_bus_scan();
 
     /* LSM6DSO WHO_AM_I */
     lsm6dso_probe();
 }
 
-/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
- * ====================== ì‰˜ ëª…ë ¹ êµ¬í˜„ ==========
- * â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€*/
+/* ?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€
+ * ====================== ??ëª…ë ¹ êµ¬í˜„ ==========
+ * ?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€*/
 #if IS_ENABLED(CONFIG_SHELL)
 
 static int cmd_echo(const struct shell *sh, size_t argc, char **argv)
 {
-    /* RX ê²€ì¦ìš©: ì…ë ¥ë°›ì€ ë¬¸ìì—´ ê·¸ëŒ€ë¡œ ì¶œë ¥ */
+    /* RX ê²€ì¦ìš©: ?…ë ¥ë°›ì? ë¬¸ì??ê·¸ë?ë¡?ì¶œë ¥ */
     for (size_t i = 1; i < argc; i++)
     {
         shell_fprintf(sh, SHELL_NORMAL, "%s%s", argv[i], (i + 1 < argc) ? " " : "");
@@ -219,7 +219,7 @@ static int cmd_log_sw(const struct shell *sh, size_t argc, char **argv)
     return -EINVAL;
 }
 
-/* --- NTC ì˜¨ë„ ì½ê¸° ì»¤ë§¨ë“œ ---------------------------------------- */
+/* --- NTC ?¨ë„ ?½ê¸° ì»¤ë§¨??---------------------------------------- */
 static int cmd_ntc(const struct shell *sh, size_t argc, char **argv)
 {
     ARG_UNUSED(argc);
@@ -249,13 +249,13 @@ static int cmd_ntc(const struct shell *sh, size_t argc, char **argv)
     return 0;
 }
 
-/* --- BLE ì œì–´ ì»¤ë§¨ë“œ ---------------------------------------- */
+/* --- BLE ?œì–´ ì»¤ë§¨??---------------------------------------- */
 static int cmd_ble_start(const struct shell *shell, size_t argc, char **argv)
 {
     ARG_UNUSED(argc);
     ARG_UNUSED(argv);
 
-    /* í™€ë“œ í•´ì œ ë¨¼ì € */
+    /* ?€???´ì œ ë¨¼ì? */
     app_set_hold(false);
 
     int rc = Ble_Start();
@@ -280,13 +280,13 @@ static int cmd_ble_stop(const struct shell *shell, size_t argc, char **argv)
     return rc;
 }
 
-/* diag ble ... íŠ¸ë¦¬ êµ¬ì„± */
+/* diag ble ... ?¸ë¦¬ êµ¬ì„± */
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_ble,
                                SHELL_CMD(start, NULL, "Start BLE advertising (legacy/ext auto).", cmd_ble_start),
                                SHELL_CMD(stop, NULL, "Stop BLE advertising.", cmd_ble_stop),
                                SHELL_SUBCMD_SET_END);
 
-/* --- GPIO ì œì–´ ì»¤ë§¨ë“œ ---------------------------------------- */
+/* --- GPIO ?œì–´ ì»¤ë§¨??---------------------------------------- */
 static int do_set(const struct shell *shell, const char *target, bool on)
 {
     int rc = -EINVAL;
@@ -315,7 +315,7 @@ static int do_set(const struct shell *shell, const char *target, bool on)
     return rc;
 }
 
-/* ê°œë³„ ì»¤ë§¨ë“œ */
+/* ê°œë³„ ì»¤ë§¨??*/
 static int cmd_gpio_rpu_on(const struct shell *sh, size_t a, char **v)
 {
     ARG_UNUSED(a);
@@ -353,7 +353,7 @@ static int cmd_gpio_led_off(const struct shell *sh, size_t a, char **v)
     return do_set(sh, "led", false);
 }
 
-/* ì„œë¸Œì»¤ë§¨ë“œ íŠ¸ë¦¬ êµ¬ì„± */
+/* ?œë¸Œì»¤ë§¨???¸ë¦¬ êµ¬ì„± */
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_gpio_rpu,
                                SHELL_CMD(on, NULL, "diag gpio rpu on", cmd_gpio_rpu_on),
                                SHELL_CMD(off, NULL, "diag gpio rpu off", cmd_gpio_rpu_off),
@@ -375,7 +375,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_gpio_root,
                                SHELL_CMD(led, &sub_gpio_led, "Status LED control", NULL),
                                SHELL_SUBCMD_SET_END);
 
-/************** ê°€ì†ì†Œ ì„¼ì„œ ì‰˜ *********** */
+/************** ê°€?ì†Œ ?¼ì„œ ??*********** */
 static int cmd_imu_init(const struct shell *shell, size_t argc, char **argv)
 {
     ARG_UNUSED(argc);
@@ -412,12 +412,12 @@ static int cmd_imu_loop(const struct shell *shell, size_t argc, char **argv)
     ARG_UNUSED(argc);
     ARG_UNUSED(argv);
 
-    const uint32_t duration_ms = 10 * 1000; /* ì´ 10ì´ˆ */
-    const uint32_t interval_ms = 500;       /* 0.5ì´ˆ ê°„ê²© */
+    const uint32_t duration_ms = 10 * 1000; /* ì´?10ì´?*/
+    const uint32_t interval_ms = 500;       /* 0.5ì´?ê°„ê²© */
 
     uint32_t t_start = k_uptime_get_32();
     uint32_t t_next = t_start;
-    uint32_t t_prev_end = t_start; /* ì´ì „ ë°˜ë³µì˜ â€œìº¡ì²˜ ì¢…ë£Œ ì‹œì â€ */
+    uint32_t t_prev_end = t_start; /* ?´ì „ ë°˜ë³µ???œìº¡ì²?ì¢…ë£Œ ?œì ??*/
 
     while ((k_uptime_get_32() - t_start) < duration_ms)
     {
@@ -451,7 +451,7 @@ static int cmd_imu_loop(const struct shell *shell, size_t argc, char **argv)
                         st.bl_rms_ms2_x100[0], st.bl_rms_ms2_x100[1], st.bl_rms_ms2_x100[2]);
         }
 
-        /* 0.5ì´ˆ ì£¼ê¸° ì •ë ¬ */
+        /* 0.5ì´?ì£¼ê¸° ?•ë ¬ */
         t_next += interval_ms;
         uint32_t now = k_uptime_get_32();
         if ((int32_t)(t_next - now) > 0)
@@ -498,7 +498,7 @@ static int cmd_imu_dump(const struct shell *shell, size_t argc, char **argv)
     return rc;
 }
 
-/* ì‰˜ ì„œë¸Œì»¤ë§¨ë“œ ë“±ë¡ */
+/* ???œë¸Œì»¤ë§¨???±ë¡ */
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_imu,
                                SHELL_CMD(who, NULL, "LSM6DSO WHO_AM_I check", cmd_imu_who),
                                SHELL_CMD(test, NULL, "LSM6DSO Test start", cmd_imu_test),
@@ -518,31 +518,12 @@ static int cmd_xgzp_read(const struct shell *sh, size_t argc, char **argv)
     int ret = 0;
 
     if (strcmp(argv[0], "p1") == 0)
-    {
-        /* Calibaration ì ìš© */
-        if (argc >= 2 && strcmp(argv[1], "offset") == 0)
-        {
-            set_calibration_xgzp6897(XGZP6897_RANGE_001K);
-        }
-        else
-        {
-            ret = read_xgzp6897_filtered(XGZP6897_RANGE_001K, &p_pa, &t_c, true);
-        }
-    }
+        ret = read_xgzp6897_filtered(XGZP6897_RANGE_001K, &p_pa, &t_c);
     else if (strcmp(argv[0], "p2") == 0)
-    {
-        if (argc >= 2 && strcmp(argv[1], "offset") == 0)
-        {
-            set_calibration_xgzp6897(XGZP6897_RANGE_010K);
-        }
-        else
-        {
-            ret = read_xgzp6897_filtered(XGZP6897_RANGE_010K, &p_pa, &t_c, true);
-        }
-    }
+        ret = read_xgzp6897_filtered(XGZP6897_RANGE_010K, &p_pa, &t_c);
     else if (strcmp(argv[0], "p3") == 0)
     {
-        /* Calibaration ì ìš© */
+        /* Calibaration ?ìš© */
         if (argc >= 2 && strcmp(argv[1], "offset") == 0)
         {
             set_calibration_xgzp6847(XGZP6847_RANGE_001MPGPN);
@@ -555,7 +536,7 @@ static int cmd_xgzp_read(const struct shell *sh, size_t argc, char **argv)
 
     if (ret == 0)
     {
-        float p_mmH2O = p_pa / 9.80665f; /* í•„ìš” ì‹œ mmH2Oë¡œ ë³€í™˜ */
+        float p_mmH2O = p_pa / 9.80665f; /* ?„ìš” ??mmH2Oë¡?ë³€??*/
         LOG_INF("XGZP6897D: P = %.3f Pa (%.3f mmH2O), T = %.2f C",
                 (double)p_pa, (double)p_mmH2O, (double)t_c);
     }
@@ -575,7 +556,7 @@ static int cmd_ssc_read(const struct shell *sh, size_t argc, char **argv)
 
     int ret = 0;
 
-    /* Calibaration ì ìš© */
+    /* Calibaration ?ìš© */
     if (argc >= 2 && strcmp(argv[1], "offset") == 0)
     {
         /* intentionally empty */
@@ -584,24 +565,24 @@ static int cmd_ssc_read(const struct shell *sh, size_t argc, char **argv)
     if (strcmp(argv[0], "p4") == 0)
     {
         ret = read_ssc_filtered(SSCDJNN010BA2A3, &p_bar, &t_c);
-        p_pa  = p_bar * 100000.0f;  // Pa ë‹¨ìœ„ë¡œ ë³€í™˜
+        p_pa  = p_bar * 100000.0f;  // Pa ?¨ìœ„ë¡?ë³€??
     }
     else if (strcmp(argv[0], "p5") == 0)
     {
         ret = read_ssc_filtered(SSCDJNN100MD2A3, &p_mmH2O, &t_c);
-        p_pa = p_mmH2O * 9.80665f;  // Pa ë‹¨ìœ„ë¡œ ë³€í™˜
+        p_pa = p_mmH2O * 9.80665f;  // Pa ?¨ìœ„ë¡?ë³€??
     }
     else if (strcmp(argv[0], "p6") == 0)
     {
         ret = read_ssc_filtered(SSCDJNN002ND2A3, &p_mmH2O, &t_c);
-        p_pa = p_mmH2O * 9.80665f;  // Pa ë‹¨ìœ„ë¡œ ë³€í™˜
+        p_pa = p_mmH2O * 9.80665f;  // Pa ?¨ìœ„ë¡?ë³€??
     }
     else
         ret = -EINVAL;
 
     if (ret == 0)
     {
-        float p_mmH2O = p_pa / 9.80665f; /* í•„ìš” ì‹œ mmH2Oë¡œ ë³€í™˜ */
+        float p_mmH2O = p_pa / 9.80665f; /* ?„ìš” ??mmH2Oë¡?ë³€??*/
         LOG_INF("SSC Pressure: P = %.3f Pa (%.3f mmH2O), T = %.2f C",
                 (double)p_pa, (double)p_mmH2O, (double)t_c);
     }
@@ -613,7 +594,7 @@ static int cmd_ssc_read(const struct shell *sh, size_t argc, char **argv)
     return ret;
 }
 
-/* ì„œë¸Œì»¤ë§¨ë“œ ì§‘í•© */
+/* ?œë¸Œì»¤ë§¨??ì§‘í•© */
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_diag,
                                SHELL_CMD(echo, NULL, "echo <text...> (UART RX check)", cmd_echo),
                                SHELL_CMD(log, NULL, "diag log [on|off] (show if no arg)", cmd_log_sw),
@@ -631,7 +612,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_diag,
                                SHELL_CMD(p6, NULL, "SSCDJNN002ND2A3 (0x28) Read", cmd_ssc_read),
                                SHELL_SUBCMD_SET_END);
 
-/* ë£¨íŠ¸ ì»¤ë§¨ë“œ ë“±ë¡ */
+/* ë£¨íŠ¸ ì»¤ë§¨???±ë¡ */
 SHELL_CMD_REGISTER(diag, &sub_diag, "Diagnostics commands", NULL);
 
 #endif /* IS_ENABLED(CONFIG_SHELL) */

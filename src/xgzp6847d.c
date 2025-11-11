@@ -68,6 +68,13 @@ LOG_MODULE_REGISTER(xgzp6847d, LOG_LEVEL_INF);
 static const struct device *xgzp6847_i2c = DEVICE_DT_GET(DT_NODELABEL(i2c0));
 
 /* 압력 오프셋 (단위: Pa). 보정 전에는 0.0f */
+/**
+ * @brief 압력 보정 오프셋 (Pa)
+ *
+ * set_calibration_xgzp6847() 호출 시, 해당 시점의 필터링된 압력값을 저장하여
+ * 이후 read_xgzp6847_filtered(..., apply_offset=true)에서 0점 보정으로 적용합니다.
+ */
+static float s_pressure_offset_pa = 0.0f;
 
 /* 내부 헬퍼: 1바이트 레지스터 읽기 */
 static int xgzp_read_reg(const struct device *i2c, uint16_t addr, uint8_t reg, uint8_t *val)
@@ -75,8 +82,6 @@ static int xgzp_read_reg(const struct device *i2c, uint16_t addr, uint8_t reg, u
     // return i2c_write_read(i2c, addr, &reg, 1, val, 1);
     return i2c_reg_read_byte(i2c, addr, reg, val);
 }
-
-static float s_pressure_offset_pa = 0.0f;
 
 /**
  * @brief 센서에 combined one-shot 변환 명령 전송
@@ -237,6 +242,21 @@ static int xgzp6847_read_raw(int32_t *pressure_adc, int16_t *temperature_adc)
     return 0;
 }
 
+/**
+ * @brief XGZP6847D 압력/온도 1회 측정 (필터 없음)
+ *
+ * - I2C 원샷(combined) 측정을 수행하고, 24bit 압력 AD + 16bit 온도 AD를 읽어
+ *   데이터시트 변환식을 통해 Pa/℃로 변환합니다.
+ *
+ * @param range_type   센서 압력 범위 타입 (XGZP6847_RANGE_001MPGPN 등)
+ * @param[out] pressure_pa   측정된 압력 값 (단위: Pa, NULL이면 무시)
+ * @param[out] temperature_c 측정된 온도 값 (단위: ℃, NULL이면 무시)
+ *
+ * @retval 0        성공
+ * @retval -EINVAL  파라미터 오류 또는 지원되지 않는 range_type
+ * @retval -ENODEV  I2C 디바이스 미준비
+ * @retval <0       I2C/변환 에러
+ */
 int xgzp6847_read_measurement(xgzp6847_range_t range_type, float *pressure_pa, float *temperature_c)
 {
     /* 1) K 값 선택 (kPa 기준) */
@@ -281,6 +301,23 @@ int xgzp6847_read_measurement(xgzp6847_range_t range_type, float *pressure_pa, f
     return 0;
 }
 
+/**
+ * @brief XGZP6847D 압력 측정 + 윈저라이즈드 평균 필터 적용
+ *
+ * - 동일 센서를 10회 연속 측정 후 winsorized 평균으로 노이즈를 완화합니다.
+ * - 온도는 마지막 측정 값 한 번만 사용(필터 미적용).
+ * - apply_offset=true이면 set_calibration_xgzp6847()로 설정된 오프셋을 적용합니다.
+ *
+ * @param range_type     센서 압력 범위 타입
+ * @param[out] pressure_pa   필터 적용된 압력 값 (단위: Pa, NULL 금지)
+ * @param[out] temperature_c 마지막 측정 온도 (단위: ℃, NULL이면 무시)
+ * @param apply_offset  보정 오프셋 적용 여부 (true: 적용, false: 미적용)
+ *
+ * @retval 0        성공
+ * @retval -EINVAL  파라미터 오류
+ * @retval -ENODEV  I2C 디바이스 미준비
+ * @retval <0       I2C/측정 에러
+ */
 int read_xgzp6847_filtered(xgzp6847_range_t range_type, float *pressure_pa, float *temperature_c, bool apply_offset)
 {
     if (pressure_pa == NULL)
@@ -319,7 +356,14 @@ int read_xgzp6847_filtered(xgzp6847_range_t range_type, float *pressure_pa, floa
 }
 
 /**
- * @brief 현재 필터링된 압력값이 0이 되도록 offset 설정
+ * @brief 현재 필터링된 압력값이 0이 되도록 오프셋 저장
+ *
+ * - read_xgzp6847_filtered(range, &p, NULL, false)로 읽은 값을 내부 보정 오프셋으로 저장하여
+ *   이후 apply_offset=true 호출 시 0점 보정이 적용되도록 합니다.
+ *
+ * @param range_type 센서 압력 범위 타입
+ * @retval 0    성공
+ * @retval <0   측정 실패 또는 I2C 에러
  */
 int set_calibration_xgzp6847(xgzp6847_range_t range_type)
 {
@@ -342,6 +386,9 @@ int set_calibration_xgzp6847(xgzp6847_range_t range_type)
     return 0;
 }
 
+/**
+ * @brief 압력 보정 오프셋을 0으로 초기화
+ */
 void clear_calibration_xgzp6847(void)
 {
     s_pressure_offset_pa = 0.0f;

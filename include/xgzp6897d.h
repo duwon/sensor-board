@@ -45,13 +45,31 @@ extern "C"
      * @param range_type   센서 압력 범위 타입
      * @param[out] pressure_pa   측정된 압력 값 (단위: Pa, NULL이면 무시)
      * @param[out] temperature_c 측정된 온도 값 (단위: ℃, NULL이면 무시)
+     * @param apply_offset  저장된 offset 보정 적용 여부
      *
      * @retval 0         성공
      * @retval -ENODEV   I2C 디바이스 미준비
      * @retval -EINVAL   파라미터 오류
      * @retval <0        I2C 통신 에러 (Zephyr errno)
      */
-    int read_xgzp6897_filtered(xgzp6897_range_t range_type, float *pressure_pa, float *temperature_c);
+    int read_xgzp6897_filtered(xgzp6897_range_t range_type, float *pressure_pa, float *temperature_c, bool apply_offset);
+
+    /**
+     * @brief 현재 측정값이 0 Pa가 되도록 offset 보정을 설정합니다.
+     *
+     * - Winsorized 평균 필터를 적용한 현재 압력값을 읽어 offset으로 저장합니다.
+     * - 이후 read_xgzp6897_filtered() 결과에는 저장된 offset이 자동 적용됩니다.
+     *
+     * @param range_type 센서 압력 범위 타입
+     * @retval 0       성공
+     * @retval <0      측정 오류 또는 I2C 오류
+     */
+    int set_calibration_xgzp6897(xgzp6897_range_t range_type);
+
+    /**
+     * @brief 보정 offset을 0으로 초기화합니다.
+     */
+    void clear_calibration_xgzp6897(void);
 
 #ifdef __cplusplus
 }
