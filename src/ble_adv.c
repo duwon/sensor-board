@@ -1,3 +1,11 @@
+/**
+ * @file
+ * @brief BLE 확장/레거시 광고 제어 모듈 구현
+ *
+ * - 블루투스 스택 활성화, 광고 세트 생성/시작/중지
+ * - 제조사 데이터(Manufacturer Specific Data) 구성과 스캔 응답 처리
+ * - 외부에서 `Init_Ble()`/`Ble_Start()`/`Ble_Stop()`을 호출해 제어
+ */
 #include "ble_adv.h"
 #include <zephyr/kernel.h>
 #include <zephyr/bluetooth/bluetooth.h>
@@ -81,8 +89,9 @@ int Ble_Stop(void)
 
 /** @brief BLE 광고 모듈 초기화
  *
- * 블루투스 스택을 활성화하고 확장 광고 세트를 생성합니다.
+ * 블루투스 스택을 활성화하고 확장/레거시 광고 세트를 생성합니다.
  *
+ * @param init_type 초기화 유형(BLE_INIT/BTN_ADV/SCAN_RESPONSE)
  * @return 0이면 성공, 음수이면 오류 코드.
  */
 int Init_Ble(ble_init_t init_type)

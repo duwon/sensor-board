@@ -1,4 +1,11 @@
-// sleep_if.c
+/**
+ * @file
+ * @brief 저전력 Sleep/ Wake 인터페이스 구현
+ *
+ * - I2C 라인 Hi-Z 설정/복구(pinctrl 상태 전환)
+ * - 인터페이스 전원(센서/RPU/LED) 정지 및 재기동 순서 관리
+ * - 간단 idle sleep 기반으로 주기적 웨이크업 시퀀스 지원
+ */
 #include "sleep_if.h"
 #include "gpio_if.h"
 #include <zephyr/kernel.h>
@@ -68,7 +75,15 @@ void i2c_bus_restore_default(void)
         (void)i2c0_apply_state(PINCTRL_STATE_DEFAULT, "default");
 }
 
-/* x초 후 깨어남 (간단 idle sleep 버전) */
+/**
+ * @brief 지정된 시간 후 깨어나도록 간단 idle sleep 진입
+ *
+ * 인터페이스 전원을 내리고 I2C 라인을 Hi-Z로 둔 뒤, 루프에서 재스케줄링하여
+ * 지정된 시간 이후에 깨어나도록 합니다. 이 구현은 시스템 오프가 아닌 idle sleep 기반입니다.
+ *
+ * @param seconds 대기 시간(초)
+ * @retval 0 성공
+ */
 int Start_Sleep(uint32_t seconds)
 {
     /* 1) 인터페이스 전원/기능 다운 */
@@ -88,6 +103,13 @@ int Start_Sleep(uint32_t seconds)
     return 0;
 }
 
+/**
+ * @brief Sleep에서 복귀하여 인터페이스를 재기동
+ *
+ * RPU → 센서 전원 순으로 켠 뒤, I2C 라인을 기본 핀 상태로 복구합니다.
+ *
+ * @retval 0 성공
+ */
 int Wakeup(void)
 {
     LOG_INF("Woken up");

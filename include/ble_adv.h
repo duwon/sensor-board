@@ -1,4 +1,8 @@
 #pragma once
+/**
+ * @file ble_adv.h
+ * @brief BLE 광고 데이터 구조와 제어 인터페이스 선언
+ */
 #include <zephyr/kernel.h>
 #include <stddef.h>
 #include <stdint.h>

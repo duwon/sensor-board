@@ -1,3 +1,10 @@
+/**
+ * @file
+ * @brief 진단/디버그 명령과 헬퍼 구현
+ *
+ * - I2C 버스 스캔, 장치 프로브, 각종 쉘 커맨드 등록
+ * - 부팅 직후 간단한 하드웨어 확인 루틴 제공
+ */
 #include <zephyr/device.h>
 #include <zephyr/drivers/i2c.h>
 #include <zephyr/kernel.h>
@@ -32,6 +39,11 @@ static int cmd_log_sw(const struct shell *sh, size_t argc, char **argv);
  * I2C 전체 스캔 (0x03~0x77)
  *  - 트랜잭션 명확히 보이도록 write_read 사용 (0바이트 write 회피)
  * ────────────────────────────────────────────*/
+/**
+ * @brief I2C0 버스 주소 스캔(0x03..0x77)
+ * @retval 0 성공
+ * @retval -ENODEV I2C 디바이스 준비 안됨
+ */
 int i2c_bus_scan(void)
 {
     if (!device_is_ready(i2c0_dev))
@@ -64,6 +76,12 @@ int i2c_bus_scan(void)
 #define WHO_AM_I 0x0F
 #define LSM6DSO_ID 0x6C
 
+/**
+ * @brief LSM6DSO WHO_AM_I 레지스터 확인
+ * @retval 0 성공(기대 아이디)
+ * @retval -ENODEV I2C 디바이스 준비 안됨
+ * @retval 음수값 통신/아이디 불일치 오류
+ */
 int lsm6dso_probe(void)
 {
     if (!device_is_ready(i2c0_dev))
@@ -83,6 +101,9 @@ int lsm6dso_probe(void)
 /* ─────────────────────────────────────────────
  * 부팅 직후 한 번 호출해 사용하는 디버그 러너
  * ────────────────────────────────────────────*/
+/**
+ * @brief 부팅 직후 한 번 호출하는 간단 디버그 런너
+ */
 void debug_run_startup(void)
 {
     /* I2C 디바그 */
