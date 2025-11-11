@@ -139,6 +139,25 @@ extern "C"
      */
     int ssc_read_pressure(const struct device *i2c, uint16_t addr, float p_min, float p_max, float *p, float *t);
 
+
+        /**
+     * @brief SSC 센서 압력 측정 + 윈저라이즈드 평균 필터 적용
+     *
+     * - 동일 센서를 10번 연속 측정 후 윈저라이즈드 평균 함수로 노이즈 제거
+     * - 온도는 마지막 측정 값 한 번만 사용 (필터 미적용)
+     *
+     * @param range_type   센서 압력 범위 타입
+     * @param[out] pressure_pa   필터 적용된 압력 값 (단위: Pa, NULL 금지)
+     * @param[out] temperature_c 마지막 측정 온도 값 (단위: ℃, NULL이면 무시)
+     * @param apply_offset 보정 오프셋 적용 여부 (true: 보정값 적용, false: 미적용)
+     *
+     * @retval 0        성공
+     * @retval -ENODEV  I2C 디바이스 미준비
+     * @retval -EINVAL  파라미터 오류
+     * @retval <0       I2C 통신 에러 (Zephyr errno)
+     */
+    int read_ssc_filtered(ssc_range_t range_type, float *pressure_pa, float *temperature_c, bool apply_offset);
+
 #ifdef __cplusplus
 }
 #endif

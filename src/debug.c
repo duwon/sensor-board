@@ -583,17 +583,17 @@ static int cmd_ssc_read(const struct shell *sh, size_t argc, char **argv)
 
     if (strcmp(argv[0], "p4") == 0)
     {
-        ret = read_ssc_filtered(SSCDJNN010BA2A3, &p_bar, &t_c);
+        ret = read_ssc_filtered(SSCDJNN010BA2A3, &p_bar, &t_c, true);
         p_pa  = p_bar * 100000.0f;  // Pa 단위로 변환
     }
     else if (strcmp(argv[0], "p5") == 0)
     {
-        ret = read_ssc_filtered(SSCDJNN100MD2A3, &p_mmH2O, &t_c);
+        ret = read_ssc_filtered(SSCDJNN100MD2A3, &p_mmH2O, &t_c, true);
         p_pa = p_mmH2O * 9.80665f;  // Pa 단위로 변환
     }
     else if (strcmp(argv[0], "p6") == 0)
     {
-        ret = read_ssc_filtered(SSCDJNN002ND2A3, &p_mmH2O, &t_c);
+        ret = read_ssc_filtered(SSCDJNN002ND2A3, &p_mmH2O, &t_c, true);
         p_pa = p_mmH2O * 9.80665f;  // Pa 단위로 변환
     }
     else

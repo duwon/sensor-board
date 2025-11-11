@@ -143,7 +143,7 @@ int ssc_read_measurment(float p_min, float p_max, float *pressure_pa, float *tem
     return 0;
 }
 
-int read_ssc_filtered(ssc_range_t range_type, float *pressure_pa, float *temperature_c)
+int read_ssc_filtered(ssc_range_t range_type, float *pressure_pa, float *temperature_c, bool apply_offset)
 {
     // pressure_pa는 필터링된 결과를 반환해야 하므로 NULL일 수 없음
     if (pressure_pa == NULL)
@@ -164,7 +164,7 @@ int read_ssc_filtered(ssc_range_t range_type, float *pressure_pa, float *tempera
             ret = ssc_read_measurment(SSC_010BA2A3_P_MIN_BAR, SSC_010BA2A3_P_MAX_BAR, &samples[i], &last_temp);
             if (ret == 0)
             {
-                printk("010BA2A3: P=%.3f bar, T=%.2f C\n", samples[i], last_temp);
+                printk("010BA2A3: P=%.3f bar, T=%.2f C\n", (double)samples[i], (double)last_temp);
             }
             else
                 return ret;
@@ -175,7 +175,7 @@ int read_ssc_filtered(ssc_range_t range_type, float *pressure_pa, float *tempera
             ret = ssc_read_measurment(SSC_100MD2A3_P_MIN_MMH2O, SSC_100MD2A3_P_MAX_MMH2O, &samples[i], &last_temp);
             if (ret == 0)
             {
-                printk("100MD2A3: P=%.1f mmH2O, T=%.2f C\n", samples[i], last_temp);
+                printk("100MD2A3: P=%.1f mmH2O, T=%.2f C\n", (double)samples[i], (double)last_temp);
             }
             else
                 return ret;
@@ -186,7 +186,7 @@ int read_ssc_filtered(ssc_range_t range_type, float *pressure_pa, float *tempera
             ret = ssc_read_measurment(SSC_002ND2A3_P_MIN_MMH2O, SSC_002ND2A3_P_MAX_MMH2O, &samples[i], &last_temp);
             if (ret == 0)
             {
-                printk("002ND2A3: P=%.3f mmH2O, T=%.2f C\n", samples[i], last_temp);
+                printk("002ND2A3: P=%.3f mmH2O, T=%.2f C\n", (double)samples[i], (double)last_temp);
             }
             else
                 return ret;
