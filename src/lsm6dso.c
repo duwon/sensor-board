@@ -676,26 +676,6 @@ static size_t find_sync_7B(const uint8_t *buf, size_t len, uint8_t acc_tag)
     return 0;
 }
 
-/* 7B 패턴이 잘 맞는 시작 오프셋 찾기 (TAG 값은 무시) */
-static size_t find_sync_7B_loose(const uint8_t *buf, size_t len)
-{
-    for (size_t base = 0; base < 7 && base + 14 <= len; ++base)
-    {
-        size_t ok = 0;
-        for (size_t i = base; i + 7 <= len; i += 7)
-        {
-            /* X/Y/Z가 전부 0x0000 이면 노이즈일 수 있으니 2~3세트는 통과시키고,
-               이후 6바이트(LSB/HB) 값이 '변화'하는지로 판단 */
-            if (i + 7 > len)
-                break;
-            ok++;
-        }
-        if (ok >= 2)
-            return base;
-    }
-    return 0;
-}
-
 /**
  * @brief 3.33kHz ODR에서 DRDY 폴링을 사용하여 가속도 데이터를 캡처하고 통계를 계산합니다.
  *

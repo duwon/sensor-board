@@ -1,6 +1,8 @@
 # editors
+.vscode/
 *.swp
 *~
+*.zip
 
 # build
 /build*/
