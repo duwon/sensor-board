@@ -41,7 +41,7 @@ int32_t Get_Sensor_Value(uint8_t sensor_id)
     const float PA_PER_MMH2O = 9.80665f;     /* 1 mmH2O = 9.80665 Pa */
     const float PA_PER_BAR   = 100000.0f;    /* 1 bar = 100000 Pa */
 
-    switch (sensor_id)
+    switch (sensor_id & 0x0F)
     {
     /* ---------------- Temperature (returns °C x100) ---------------- */
     case SENSOR_ID_TEMPERATURE_NTC_2:  /* 온도 (10k NTC) */
