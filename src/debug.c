@@ -20,6 +20,7 @@
 #include "xgzp6897d.h"
 #include "xgzp6847d.h"
 #include "ssc_pressure.h"
+#include "ntc.h"
 
 /* Standard C headers for helpers used below */
 #include <string.h>
@@ -228,7 +229,7 @@ static int cmd_ntc(const struct shell *sh, size_t argc, char **argv)
     int16_t vdd_mv = 0;
     int16_t cx100 = 0;
 
-    int rc = read_vdd_mv(&vdd_mv);
+    int rc = read_ntc(&vdd_mv);
     if (rc)
     {
         shell_error(sh, "VDD read failed: %d", rc);
@@ -556,8 +557,7 @@ static int cmd_xgzp_read(const struct shell *sh, size_t argc, char **argv)
     if (ret == 0)
     {
         float p_mmH2O = p_pa / 9.80665f; /* 필요 시 mmH2O로 변환 */
-        LOG_INF("XGZP6897D: P = %.3f Pa (%.3f mmH2O), T = %.2f C",
-                (double)p_pa, (double)p_mmH2O, (double)t_c);
+        LOG_INF("XGZP6897D: P = %.3f Pa (%.3f mmH2O), T = %.2f C", (double)p_pa, (double)p_mmH2O, (double)t_c);
     }
     else
     {
@@ -584,17 +584,17 @@ static int cmd_ssc_read(const struct shell *sh, size_t argc, char **argv)
     if (strcmp(argv[0], "p4") == 0)
     {
         ret = read_ssc_filtered(SSCDJNN010BA2A3, &p_bar, &t_c, true);
-        p_pa  = p_bar * 100000.0f;  // Pa 단위로 변환
+        p_pa = p_bar * 100000.0f; // Pa 단위로 변환
     }
     else if (strcmp(argv[0], "p5") == 0)
     {
         ret = read_ssc_filtered(SSCDJNN100MD2A3, &p_mmH2O, &t_c, true);
-        p_pa = p_mmH2O * 9.80665f;  // Pa 단위로 변환
+        p_pa = p_mmH2O * 9.80665f; // Pa 단위로 변환
     }
     else if (strcmp(argv[0], "p6") == 0)
     {
         ret = read_ssc_filtered(SSCDJNN002ND2A3, &p_mmH2O, &t_c, true);
-        p_pa = p_mmH2O * 9.80665f;  // Pa 단위로 변환
+        p_pa = p_mmH2O * 9.80665f; // Pa 단위로 변환
     }
     else
         ret = -EINVAL;
@@ -602,8 +602,7 @@ static int cmd_ssc_read(const struct shell *sh, size_t argc, char **argv)
     if (ret == 0)
     {
         float p_mmH2O = p_pa / 9.80665f; /* 필요 시 mmH2O로 변환 */
-        LOG_INF("SSC Pressure: P = %.3f Pa (%.3f mmH2O), T = %.2f C",
-                (double)p_pa, (double)p_mmH2O, (double)t_c);
+        LOG_INF("SSC Pressure: P = %.3f Pa (%.3f mmH2O), T = %.2f C", (double)p_pa, (double)p_mmH2O, (double)t_c);
     }
     else
     {
@@ -611,6 +610,94 @@ static int cmd_ssc_read(const struct shell *sh, size_t argc, char **argv)
     }
 
     return ret;
+}
+
+static int cmd_sensor_read(const struct shell *sh, size_t argc, char **argv)
+{
+    struct item
+    {
+        uint8_t id;
+        const char *name;
+        const char *range;
+    } list[] = {
+        {SENSOR_ID_PRESSURE_AIR_FLOW_SSCDJNN002ND, "SSCDJNN002ND2A3", "±50.8 mmH2O"},
+        {SENSOR_ID_PRESSURE_AIR_HEADER_SSCDJNN010BA, "SSCDJNN010BA2A3", "0 ~ 10 bar"},
+        {SENSOR_ID_PRESSURE_OUTLET_SSCDJNN100MD, "SSCDJNN100MD2A3", "±1020 mmH2O"},
+        {SENSOR_ID_PRESSURE_AIR_FLOW_XGZP6897_001K, "XGZP6897D001KPDPN", "±100 mmH2O"},
+        {SENSOR_ID_PRESSURE_AIR_HEADER_XGZP6847_001MP, "XGZP6847D001MPGPN", "-1 ~ 10 bar"},
+        {SENSOR_ID_PRESSURE_INLET_XGZP6897_010K, "XGZP6897D010KPDPN", "±1000 mmH2O"},
+    };
+    const size_t list_cnt = ARRAY_SIZE(list);
+
+    if (argc == 1)
+    {
+        shell_print(sh, "diag p <id>  // Read pressure (mmH2O x100)");
+        shell_print(sh, "diag p cal <id>  // Calibrate sensor (zero offset)");
+        for (size_t i = 0; i < list_cnt; ++i)
+        {
+            shell_print(sh, "id=%u  part=%s  range=%s", list[i].id, list[i].name, list[i].range);
+        }
+        return 0;
+    }
+
+    if ((argc >= 3) && (strcmp(argv[1], "cal") == 0))
+    {
+        int id = atoi(argv[2]);
+        if (id < 0 || id > 255)
+        {
+            shell_error(sh, "invalid id: %s", argv[2]);
+            return -EINVAL;
+        }
+
+        int rc = Set_Calibration((uint8_t)id);
+        if (rc == 0)
+        {
+            const char *name = "unknown";
+            for (size_t i = 0; i < list_cnt; ++i)
+            {
+                if (list[i].id == (uint8_t)id)
+                {
+                    name = list[i].name;
+                    break;
+                }
+            }
+            shell_print(sh, "Calibration OK: id=%d (%s)", id, name);
+        }
+        else
+        {
+            shell_error(sh, "Calibration failed: id=%d err=%d", id, rc);
+        }
+        return rc;
+    }
+
+    /* 쉘 인자가 2개 이상이면 */
+    int id = atoi(argv[1]);
+    if (id < 0 || id > 255)
+    {
+        shell_error(sh, "invalid id: %s", argv[1]);
+        return -EINVAL;
+    }
+
+    int32_t v_x100 = Get_Sensor_Value((uint8_t)id);
+
+    /* 센서 정보 */
+    const char *pname = "unknown";
+    const char *prange = "";
+    for (size_t i = 0; i < list_cnt; ++i)
+    {
+        if (list[i].id == (uint8_t)id)
+        {
+            pname = list[i].name;
+            prange = list[i].range;
+            break;
+        }
+    }
+
+    /* 출력 */
+    int32_t abs_x100 = (v_x100 < 0) ? -v_x100 : v_x100;
+    shell_print(sh, "id=%d part=%s (%s): %s%ld.%02ld mmH2O  (%ld x100)", id, pname, prange, (v_x100 < 0) ? "-" : "", (long)(abs_x100 / 100), (long)(abs_x100 % 100), (long)v_x100);
+
+    return 0;
 }
 
 /* 서브커맨드 집합 */
@@ -629,6 +716,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_diag,
                                SHELL_CMD(p4, NULL, "SSCDJNN010BA2A3 (0x28) Read", cmd_ssc_read),
                                SHELL_CMD(p5, NULL, "SSCDJNN100MD2A3 (0x28) Read", cmd_ssc_read),
                                SHELL_CMD(p6, NULL, "SSCDJNN002ND2A3 (0x28) Read", cmd_ssc_read),
+                               SHELL_CMD(p, NULL, "Pressure sensor read alias", cmd_sensor_read),
                                SHELL_SUBCMD_SET_END);
 
 /* 루트 커맨드 등록 */

@@ -18,6 +18,15 @@ LOG_MODULE_REGISTER(ssc_pressure, LOG_LEVEL_INF);
 /* I2C0 핸들 */
 static const struct device *i2c0_dev = DEVICE_DT_GET(DT_NODELABEL(i2c0));
 
+/* 각 범위별 보정 오프셋 저장 (단위는 각 범위의 반환 단위와 동일)
+ *  - SSCDJNN010BA2A3 : bar 단위
+ *  - SSCDJNN100MD2A3 : mmH2O 단위
+ *  - SSCDJNN002ND2A3 : mmH2O 단위
+ */
+static float s_offset_bar_010BA = 0.0f;
+static float s_offset_mmh2o_100MD = 0.0f;
+static float s_offset_mmh2o_002ND = 0.0f;
+
 static int ssc_decode_raw(const uint8_t buf[4], ssc_raw_data_t *out)
 {
     if (out == NULL)
@@ -161,7 +170,7 @@ int read_ssc_filtered(ssc_range_t range_type, float *pressure_pa, float *tempera
         {
         case SSCDJNN010BA2A3:
             /* SSCDJNN010BA2A3 : 0 ~ 10 bar */
-            ret = ssc_read_measurment(SSC_010BA2A3_P_MIN_BAR, SSC_010BA2A3_P_MAX_BAR, &samples[i], &last_temp);
+            ret = ssc_read_measurment(SSC_010BA2A3_P_MIN_BAR, SSC_010BA2A3_P_MAX_BAR, &samples[i], (temperature_c != NULL) ? &last_temp : NULL);
             if (ret == 0)
             {
                 printk("010BA2A3: P=%.3f bar, T=%.2f C\n", (double)samples[i], (double)last_temp);
@@ -172,7 +181,7 @@ int read_ssc_filtered(ssc_range_t range_type, float *pressure_pa, float *tempera
 
         case SSCDJNN100MD2A3:
             /* SSCDJNN100MD2A3 : ±1020 mmH2O */
-            ret = ssc_read_measurment(SSC_100MD2A3_P_MIN_MMH2O, SSC_100MD2A3_P_MAX_MMH2O, &samples[i], &last_temp);
+            ret = ssc_read_measurment(SSC_100MD2A3_P_MIN_MMH2O, SSC_100MD2A3_P_MAX_MMH2O, &samples[i], (temperature_c != NULL) ? &last_temp : NULL);
             if (ret == 0)
             {
                 printk("100MD2A3: P=%.1f mmH2O, T=%.2f C\n", (double)samples[i], (double)last_temp);
@@ -183,7 +192,7 @@ int read_ssc_filtered(ssc_range_t range_type, float *pressure_pa, float *tempera
 
         case SSCDJNN002ND2A3:
             /* SSCDJNN002ND2A3 : ±50.8 mmH2O */
-            ret = ssc_read_measurment(SSC_002ND2A3_P_MIN_MMH2O, SSC_002ND2A3_P_MAX_MMH2O, &samples[i], &last_temp);
+            ret = ssc_read_measurment(SSC_002ND2A3_P_MIN_MMH2O, SSC_002ND2A3_P_MAX_MMH2O, &samples[i], (temperature_c != NULL) ? &last_temp : NULL);
             if (ret == 0)
             {
                 printk("002ND2A3: P=%.3f mmH2O, T=%.2f C\n", (double)samples[i], (double)last_temp);
@@ -205,5 +214,67 @@ int read_ssc_filtered(ssc_range_t range_type, float *pressure_pa, float *tempera
     }
 
     /* 2) 윈저라이즈드 평균 필터 적용 */
-    return winsor_mean_10f(samples, pressure_pa);
+    int ret2 = winsor_mean_10f(samples, pressure_pa);
+    if (ret2 < 0)
+        return ret2;
+
+    /* 3) 보정 오프셋 적용 */
+    if (apply_offset)
+    {
+        switch (range_type)
+        {
+        case SSCDJNN010BA2A3: /* bar */
+            *pressure_pa -= s_offset_bar_010BA;
+            break;
+        case SSCDJNN100MD2A3: /* mmH2O */
+            *pressure_pa -= s_offset_mmh2o_100MD;
+            break;
+        case SSCDJNN002ND2A3: /* mmH2O */
+            *pressure_pa -= s_offset_mmh2o_002ND;
+            break;
+        default:
+            break;
+        }
+    }
+
+    return 0;
+}
+
+int set_calibration_ssc(ssc_range_t range_type)
+{
+    float p = 0.0f;
+    float t = 0.0f;
+
+    /* 오프셋 미적용 상태에서 필터링된 압력값을 읽고 저장 */
+    int ret = read_ssc_filtered(range_type, &p, &t, false);
+    if (ret < 0)
+        return ret;
+
+    switch (range_type)
+    {
+    case SSCDJNN010BA2A3: /* bar */
+        s_offset_bar_010BA = p;
+        LOG_INF("SSC 010BA offset set to %.5f bar", (double)s_offset_bar_010BA);
+        break;
+    case SSCDJNN100MD2A3: /* mmH2O */
+        s_offset_mmh2o_100MD = p;
+        LOG_INF("SSC 100MD offset set to %.2f mmH2O", (double)s_offset_mmh2o_100MD);
+        break;
+    case SSCDJNN002ND2A3: /* mmH2O */
+        s_offset_mmh2o_002ND = p;
+        LOG_INF("SSC 002ND offset set to %.2f mmH2O", (double)s_offset_mmh2o_002ND);
+        break;
+    default:
+        return -EINVAL;
+    }
+
+    return 0;
+}
+
+void clear_calibration_ssc(void)
+{
+    s_offset_bar_010BA = 0.0f;
+    s_offset_mmh2o_100MD = 0.0f;
+    s_offset_mmh2o_002ND = 0.0f;
+    LOG_INF("SSC calibration offsets cleared");
 }

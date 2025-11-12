@@ -19,6 +19,7 @@
 #include "app_diag.h"
 #include "sleep_if.h"
 #include "xgzp6897d.h"
+#include "ntc.h"
 
 LOG_MODULE_REGISTER(app, LOG_LEVEL_INF);
 
@@ -84,10 +85,7 @@ void debug_run_code(void)
         /* Pa → mmH2O 로도 같이 보고 싶으면 아래 변환 사용 */
         float pressure_mmH2O = pressure_pa / 9.80665f;
 
-        LOG_INF("XGZP6897D: P = %.3f Pa (%.3f mmH2O), T = %.2f C",
-                (double)pressure_pa,
-                (double)pressure_mmH2O,
-                (double)temperature_c);
+        LOG_INF("XGZP6897D: P = %.3f Pa (%.3f mmH2O), T = %.2f C", (double)pressure_pa, (double)pressure_mmH2O, (double)temperature_c);
     }
     else
     {
@@ -139,11 +137,9 @@ static void led_fn(struct k_work *w)
 static void get_sensor_data(sensor_sample_t *s)
 {
     /* 1) 센서 읽기(간단) */
-    read_pressure_0x28(s);
-    int16_t t_cx100 = 0;
-    read_ntc_ain1_cx100(&t_cx100);
-    s->temperature_c_x100 = t_cx100;
-    s->battery_pc = 100; // LTC3337 등을 통해 실제 배터리 잔량 업데이트 필요
+    s->p_value_x100 = Get_Sensor_Value(7);       // XGZP6897D010KPDPN 압력 값 읽기
+    s->temperature_c_x100 = Get_Sensor_Value(3); // NTC 온도 값 읽기
+    s->battery_pc = 100;                         // LTC3337 등을 통해 실제 배터리 잔량 업데이트 필요
 
     // MCU 온도 및 배터리 업데이트 (8-bit)
     Get_MCU_Temperature(&mfg_data.mcu_temperature);
@@ -194,6 +190,8 @@ static void loop_fn(struct k_work *w)
 
     /* 1) 센서 읽기 */
     sensor_sample_t s = {0};
+    s.temperature_c_x100 = 0;
+    s.p_value_x100 = 0;
     get_sensor_data(&s);
 
     debug_run_code();
@@ -248,7 +246,7 @@ int main(void)
     g_dip = parse_dip(raw);
 
     /* 하드웨어 초기화 */
-    sensors_init();
+    Init_Sensor();
     ltc3337_init();
 
     /* BLE 초기화 */

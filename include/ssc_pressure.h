@@ -84,8 +84,8 @@ extern "C"
     /** @} */
 
     /**
-     * @brief SSC 센서로부터 4바이트 Raw 데이터 패킷을 읽어옵니다.
-     *
+     * @brief 
+     * 
      * @param i2c   I2C 장치 포인터.
      * @param addr   7비트 I2C 주소 (일반적으로 @ref SSC_I2C_ADDR_0X28).
      * @param[out] out 채울 Raw 데이터 구조체.
@@ -157,6 +157,23 @@ extern "C"
      * @retval <0       I2C 통신 에러 (Zephyr errno)
      */
     int read_ssc_filtered(ssc_range_t range_type, float *pressure_pa, float *temperature_c, bool apply_offset);
+
+    /**
+     * @brief 현재 측정값이 0이 되도록 SSC 센서 오프셋을 저장합니다.
+     *
+     * - range_type별(010BA/bar, 100MD/mmH2O, 002ND/mmH2O)로 독립 저장
+     * - 이후 read_ssc_filtered(..., apply_offset=true)에서 저장된 오프셋 적용
+     *
+     * @param range_type 센서 압력 범위 타입
+     * @retval 0   성공
+     * @retval <0  측정 오류 또는 I2C 에러
+     */
+    int set_calibration_ssc(ssc_range_t range_type);
+
+    /**
+     * @brief 저장된 SSC 보정 오프셋을 모두 0으로 초기화합니다.
+     */
+    void clear_calibration_ssc(void);
 
 #ifdef __cplusplus
 }

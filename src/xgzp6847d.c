@@ -368,12 +368,9 @@ int read_xgzp6847_filtered(xgzp6847_range_t range_type, float *pressure_pa, floa
     float last_temp = 0.0f;
 
     /* WINSOR_SAMPLES_TOTAL 회 연속 측정 */
-    for (int i = 0; i < WINSOR_SAMPLES_TOTAL; ++i)
+    for (int i = 0; i < WINSOR_SAMPLES_TOTAL; i++)
     {
-        int ret = xgzp6847_read_measurement(
-            range_type,
-            &samples[i],
-            (temperature_c != NULL) ? &last_temp : NULL);
+        int ret = xgzp6847_read_measurement(range_type, &samples[i], (temperature_c != NULL) ? &last_temp : NULL);
         if (ret < 0)
         {
             return ret;
