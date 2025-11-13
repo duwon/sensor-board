@@ -32,7 +32,7 @@
  */
 typedef struct
 {
-    int32_t p_value_x100;       /**< 압력 값 * 100 (단위는 모드에 따라 mmH2O 또는 mbar) */
+    int32_t p_value_x100;       /**< 압력 값 * 100 (단위는 센서별로 mmH2O 또는 bar) */
     int16_t temperature_c_x100; /**< 온도 값 * 100 (NTC 또는 센서 자체 온도) */
     uint8_t battery_pc;         /**< 배터리 잔량 (%) */
     int16_t acc_rms_x100[3];    /**< 가속도 RMS * 100 (선택적) */

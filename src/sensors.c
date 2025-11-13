@@ -93,17 +93,15 @@ int32_t Get_Sensor_Value(uint8_t sensor_id)
     {
         float p_pa = 0.0f;
         (void)read_xgzp6847_filtered(XGZP6847_RANGE_001MPGPN, &p_pa, NULL, true);
-        float mmh2o_x100 = (p_pa / PA_PER_MMH2O) * 100.0f; /* mmH2O x100 */
-        return (int32_t)mmh2o_x100;
+        float bar_x100 = (p_pa / PA_PER_BAR) * 100.0f; /* bar x100 */
+        return (int32_t)bar_x100;
     }
     case SENSOR_ID_PRESSURE_AIR_HEADER_SSCDJNN010BA:  /* 압력(Air Header) : SSCDJNN010BA2A3 → bar */
     {
         float p_bar = 0.0f;
         (void)read_ssc_filtered(SSCDJNN010BA2A3, &p_bar, NULL, true);
-        /* bar → Pa → mmH2O → x100 */
-        float p_pa = p_bar * PA_PER_BAR;
-        float mmh2o_x100 = (p_pa / PA_PER_MMH2O) * 100.0f;
-        return (int32_t)mmh2o_x100;
+        float bar_x100 = p_bar * 100.0f; /* bar x100 */
+        return (int32_t)bar_x100;
     }
 
     default:
