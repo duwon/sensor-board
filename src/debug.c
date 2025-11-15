@@ -381,7 +381,7 @@ static int cmd_imu_init(const struct shell *shell, size_t argc, char **argv)
 {
     ARG_UNUSED(argc);
     ARG_UNUSED(argv);
-    int rc = lsm6dso_init(LSM6DSO_FS_4G); /* 기본 ±4g */
+    int rc = lsm6dso_init(); 
     shell_print(shell, "lsm6dso_init: rc=%d", rc);
     return rc;
 }
@@ -425,10 +425,13 @@ static int cmd_imu_loop(const struct shell *shell, size_t argc, char **argv)
         uint32_t t_before = k_uptime_get_32();
         uint32_t interval_before_ms = t_before - t_prev_end;
 
-        lsm6dso_stats_t st = {0};
+        /* lsm6dso_stats_t st = {0}; // 더 이상 사용하지 않음 */
 
         uint32_t t_call0 = k_uptime_get_32();
-        int rc = lsm6dso_capture_once(&st);
+        
+        /* === 함수 호출 변경 === */
+        int rc = lsm6dso_capture_and_process();
+        
         uint32_t t_call1 = k_uptime_get_32();
 
         uint32_t capture_ms = t_call1 - t_call0;
@@ -437,19 +440,33 @@ static int cmd_imu_loop(const struct shell *shell, size_t argc, char **argv)
         shell_print(shell, "\nloop: interval_before=%ums, capture_ms=%ums",
                     (unsigned)interval_before_ms, (unsigned)capture_ms);
 
-        shell_print(shell, "rc=%d, n=%u, WHO=0x%02X, WTM=%d",
-                    rc, st.n, st.whoami, st.wtm_reached);
+        /* === 출력 내용 변경 (g_vib_results 기준) === */
+        shell_print(shell, "rc=%d", rc);
 
-        if (st.n > 0)
+        if (rc == 0)
         {
-            shell_print(shell, "ALL PEAK (x,y,z) = (%d,%d,%d) x0.01 m/s^2",
-                        st.peak_ms2_x100[0], st.peak_ms2_x100[1], st.peak_ms2_x100[2]);
-            shell_print(shell, "ALL RMS  (x,y,z) = (%d,%d,%d) x0.01 m/s^2",
-                        st.rms_ms2_x100[0], st.rms_ms2_x100[1], st.rms_ms2_x100[2]);
-            shell_print(shell, "10-1000Hz PEAK(x,y,z) = (%d,%d,%d) x0.01 m/s^2",
-                        st.bl_peak_ms2_x100[0], st.bl_peak_ms2_x100[1], st.bl_peak_ms2_x100[2]);
-            shell_print(shell, "10-1000Hz RMS (x,y,z) = (%d,%d,%d) x0.01 m/s^2",
-                        st.bl_rms_ms2_x100[0], st.bl_rms_ms2_x100[1], st.bl_rms_ms2_x100[2]);
+            /* * lsm6dso_capture_and_process()가 g_vib_results를 업데이트합니다.
+             * (결과는 float, 단위는 mg 및 mm/s)
+             */
+            shell_print(shell, "A-RMS (mg)   (x,y,z) = (%.2f, %.2f, %.2f)",
+                        g_vib_results.a_rms_mg[0],
+                        g_vib_results.a_rms_mg[1],
+                        g_vib_results.a_rms_mg[2]);
+
+            shell_print(shell, "A-PEAK (mg)  (x,y,z) = (%.2f, %.2f, %.2f)",
+                        g_vib_results.a_peak_mg[0],
+                        g_vib_results.a_peak_mg[1],
+                        g_vib_results.a_peak_mg[2]);
+
+            shell_print(shell, "V-RMS (mm/s) (x,y,z) = (%.2f, %.2f, %.2f)",
+                        g_vib_results.v_rms_mmps[0],
+                        g_vib_results.v_rms_mmps[1],
+                        g_vib_results.v_rms_mmps[2]);
+
+            shell_print(shell, "V-PEAK (mm/s)(x,y,z) = (%.2f, %.2f, %.2f)",
+                        g_vib_results.v_peak_mmps[0],
+                        g_vib_results.v_peak_mmps[1],
+                        g_vib_results.v_peak_mmps[2]);
         }
 
         /* 0.5초 주기 정렬 */
@@ -494,9 +511,11 @@ static int cmd_imu_dump(const struct shell *shell, size_t argc, char **argv)
         if (v > 0)
             bytes = (uint16_t)v;
     }
-    int rc = lsm6dso_dump_fifo(shell, bytes);
-    shell_print(shell, "imu dump: rc=%d", rc);
-    return rc;
+    // int rc = lsm6dso_dump_fifo(shell, bytes);
+    // shell_print(shell, "imu dump: rc=%d", rc);
+    // return rc;
+
+    return 0;;
 }
 
 /* 쉘 서브커맨드 등록 */
