@@ -425,13 +425,10 @@ static int cmd_imu_loop(const struct shell *shell, size_t argc, char **argv)
         uint32_t t_before = k_uptime_get_32();
         uint32_t interval_before_ms = t_before - t_prev_end;
 
-        /* lsm6dso_stats_t st = {0}; // 더 이상 사용하지 않음 */
+        lsm6dso_stats_t st = {0};
 
         uint32_t t_call0 = k_uptime_get_32();
-        
-        /* === 함수 호출 변경 === */
-        int rc = lsm6dso_capture_and_process();
-        
+        int rc = lsm6dso_capture_once(&st);
         uint32_t t_call1 = k_uptime_get_32();
 
         uint32_t capture_ms = t_call1 - t_call0;
@@ -440,33 +437,19 @@ static int cmd_imu_loop(const struct shell *shell, size_t argc, char **argv)
         shell_print(shell, "\nloop: interval_before=%ums, capture_ms=%ums",
                     (unsigned)interval_before_ms, (unsigned)capture_ms);
 
-        /* === 출력 내용 변경 (g_vib_results 기준) === */
-        shell_print(shell, "rc=%d", rc);
+        shell_print(shell, "rc=%d, n=%u, WHO=0x%02X, WTM=%d",
+                    rc, st.n, st.whoami, st.wtm_reached);
 
-        if (rc == 0)
+        if (st.n > 0)
         {
-            /* * lsm6dso_capture_and_process()가 g_vib_results를 업데이트합니다.
-             * (결과는 float, 단위는 mg 및 mm/s)
-             */
-            shell_print(shell, "A-RMS (mg)   (x,y,z) = (%.2f, %.2f, %.2f)",
-                        g_vib_results.a_rms_mg[0],
-                        g_vib_results.a_rms_mg[1],
-                        g_vib_results.a_rms_mg[2]);
-
-            shell_print(shell, "A-PEAK (mg)  (x,y,z) = (%.2f, %.2f, %.2f)",
-                        g_vib_results.a_peak_mg[0],
-                        g_vib_results.a_peak_mg[1],
-                        g_vib_results.a_peak_mg[2]);
-
-            shell_print(shell, "V-RMS (mm/s) (x,y,z) = (%.2f, %.2f, %.2f)",
-                        g_vib_results.v_rms_mmps[0],
-                        g_vib_results.v_rms_mmps[1],
-                        g_vib_results.v_rms_mmps[2]);
-
-            shell_print(shell, "V-PEAK (mm/s)(x,y,z) = (%.2f, %.2f, %.2f)",
-                        g_vib_results.v_peak_mmps[0],
-                        g_vib_results.v_peak_mmps[1],
-                        g_vib_results.v_peak_mmps[2]);
+            shell_print(shell, "ALL PEAK (x,y,z) = (%d,%d,%d) x0.01 m/s^2",
+                        st.peak_ms2_x100[0], st.peak_ms2_x100[1], st.peak_ms2_x100[2]);
+            shell_print(shell, "ALL RMS  (x,y,z) = (%d,%d,%d) x0.01 m/s^2",
+                        st.rms_ms2_x100[0], st.rms_ms2_x100[1], st.rms_ms2_x100[2]);
+            shell_print(shell, "10-1000Hz PEAK(x,y,z) = (%d,%d,%d) x0.01 m/s^2",
+                        st.bl_peak_ms2_x100[0], st.bl_peak_ms2_x100[1], st.bl_peak_ms2_x100[2]);
+            shell_print(shell, "10-1000Hz RMS (x,y,z) = (%d,%d,%d) x0.01 m/s^2",
+                        st.bl_rms_ms2_x100[0], st.bl_rms_ms2_x100[1], st.bl_rms_ms2_x100[2]);
         }
 
         /* 0.5초 주기 정렬 */

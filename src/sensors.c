@@ -105,7 +105,7 @@ int32_t Get_Sensor_Value(uint8_t sensor_id)
     }
 
     default:
-        return 0;
+        return -ENOTSUP;
     }
 }
 

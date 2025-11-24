@@ -1,3 +1,14 @@
+/**
+ * @file lsm6dso.c
+ * @brief LSM6DSO IMU 드라이버
+ *
+ * @details
+ * LSM6DSO 가속도계 센서 드라이버
+ * 3.33kHz의 고속 샘플링(ODR) 설정 후, FIFO를 사용하지 않고 DRDY(Data Ready) 비트를 폴링(polling)하여 데이터를 직접 캡처합니다.
+ *
+ * 캡처된 데이터는 내장된 1024-point FFT 루틴을 통해 전체 대역(Broadband) 및 특정 대역(10-1000Hz)의 RMS 및 Peak 값을 m/s^2 단위로 계산하는 데 사용됩니다.
+ */
+
 #include "lsm6dso.h"
 #include <zephyr/device.h>
 #include <zephyr/drivers/i2c.h>
@@ -6,7 +17,6 @@
 #include <zephyr/sys/util.h>
 #include <zephyr/shell/shell.h>
 #include <math.h>
-#include <complex.h>
 #include <string.h>
 
 /**
@@ -25,16 +35,12 @@ LOG_MODULE_REGISTER(lsm6dso, LOG_LEVEL_INF);
  * 표현식(expr)을 실행하고, 그 결과가 0 (성공)이 아니면 현재 함수에서 즉시 해당 오류 코드를 반환합니다.
  * @param expr 평가할 표현식 (주로 I2C R/W 함수 호출)
  */
-#undef RC
-#define RC(expr)                                                        \
-    do                                                                  \
-    {                                                                   \
-        int __rc = (expr);                                              \
-        if (__rc)                                                       \
-        {                                                               \
-            LOG_ERR("I2C Fail: %d at %s:%d", __rc, __func__, __LINE__); \
-            return __rc;                                                \
-        }                                                               \
+#define RC(expr)           \
+    do                     \
+    {                      \
+        int __rc = (expr); \
+        if (__rc)          \
+            return __rc;   \
     } while (0)
 
 // I2C 반환 코드를 로그로 출력하는 매크로 (오류 발생 시 디버그 정보 추가)
@@ -69,12 +75,16 @@ LOG_MODULE_REGISTER(lsm6dso, LOG_LEVEL_INF);
  * @note 이름과 달리 실제로는 FIFO가 아닌 DRDY 폴링 캡처에 사용됩니다.
  * @{
  */
-#define FIFO_WTM_WORDS 999 /**< 캡처할 최대 샘플 수 (워드) */
+#define FIFO_WTM_WORDS 999    /**< 캡처할 최대 샘플 수 (워드) */
+#define FIFO_BYTES_PER_WORD 7 /**< FIFO에서 가속도 1샘플당 7B (TAG+XYZ) */
 
 /* 캡처 대상 배열 (BSS) */
 static int16_t g_ax[FIFO_WTM_WORDS]; /**< X축 가속도 LSB 데이터 버퍼 */
 static int16_t g_ay[FIFO_WTM_WORDS]; /**< Y축 가속도 LSB 데이터 버퍼 */
 static int16_t g_az[FIFO_WTM_WORDS]; /**< Z축 가속도 LSB 데이터 버퍼 */
+
+/* FIFO RAW 버퍼: TAG+XYZ 그대로 받아두는 용도 */
+static uint8_t g_fifo_raw[FIFO_WTM_WORDS * FIFO_BYTES_PER_WORD];
 
 /** @} */
 
@@ -110,6 +120,66 @@ static const struct device *i2c0 = DEVICE_DT_GET(DT_NODELABEL(i2c0)); /**< I2C0 
 #define REG_FIFO_DATA_OUT_TAG 0x78 /* 시작 주소(L) → 연속 버스트 읽기 */
 #define REG_STATUS_REG 0x1E
 
+/** @} */
+
+#define WHOAMI_EXPECTED 0x6C /**< WHO_AM_I 레지스터 기대값 */
+
+/**
+ * @name 레지스터 비트필드 정의
+ * @{
+ */
+
+/* REG_CTRL3_C */
+#define CTRL3_C_BDU BIT(6)    /**< Block Data Update */
+#define CTRL3_C_IF_INC BIT(2) /**< Register address auto-increment */
+
+/* REG_CTRL9_XL */
+#define CTRL9_XL_I3C_DISABLE BIT(1) /**< I3C 인터페이스 비활성화 */
+
+/* REG_CTRL1_XL: ODR, FS */
+/**
+ * @brief 가속도 ODR: ODR_FIFO code for 3.33 kHz is 0x0A.
+ * @note @ref lsm6dso_init 에서는 0x9 (3.33kHz)를 사용합니다. 이 값은 [7:3] 비트에 배치되므로 반드시 <<3 해줘야 함!
+ */
+#define ODR_FIFO_3k33_SH ((uint8_t)(0x09 << 3))
+#define FS_XL_4G (0x2 << 2)  /**< 가속도 Full-Scale: ±4g (10b) */
+#define FS_XL_16G (0x1 << 2) /**< 가속도 Full-Scale: ±16g (01b) */
+
+/* REG_CTRL2_G: Gyroscope */
+#define ODR_G_POWER_DOWN (0x0 << 4) /**< 자이로스코프 파워 다운 */
+
+/* FIFO 관련 설정 */
+// #define ODR_FIFO_3k33 0x0A /**< FIFO ODR: 3.33 kHz (1010b) */
+/**
+ * @brief FIFO 가속도 BDR: 3.33 kHz (1010b)
+ * @note @ref lsm6dso_init 에서는 0x9 (3.33kHz)를 사용합니다.
+ */
+#define BDR_XL_3k33 (0x0A)
+#define FIFO_CTRL4_STOP_ON_WTM BIT(5) /**< Watermark 도달 시 FIFO 중지 (0=Overwrite) */
+#define FIFO_MODE_BYPASS 0x0          /**< FIFO 모드: Bypass (000b) */
+#define FIFO_MODE_FIFO 0x1            /**< FIFO 모드: FIFO (001b) */
+#define FIFO_MODE_CONTINUOUS 0x6      /**< FIFO 모드: Continuous (110b) */
+#define STOP_ON_WTM_BIT BIT(5)
+#define ACC_TAG 0x01 /* XL Tag 값 (하위 nibble) */
+
+/* REG_STATUS_REG */
+#define XLDA_BIT BIT(0) /**< Accelerometer new data available */
+/** @} */
+
+/**
+ * @name 샘플링 및 FFT 정의
+ * @{
+ */
+#define IMU_FS_HZ 3330.0f /**< IMU 샘플링 주파수 (Hz) (3.33 kHz 근사) */
+#define NFFT 1024         /**< FFT 포인트 수 (Radix-2) */
+/** @} */
+
+/**
+ * @name 내부 I2C 유틸리티
+ * @details LSM6DSO와 통신하기 위한 정적 래퍼(wrapper) 함수
+ * @{
+ */
+
 /**
  * @brief I2C로 1바이트 쓰기
  * @param reg 대상 레지스터 주소
@@ -133,16 +203,59 @@ static int rd_u8(uint8_t reg, uint8_t *val)
     return i2c_write_read(i2c0, LSM6DSO_I2C_ADDR, &reg, 1, val, 1);
 }
 
+int rd_u16(uint8_t reg, uint16_t *data_out)
+{
+    uint8_t raw_data[2]; // LSB, MSB 순서로 데이터를 저장할 배열
+    int rc;
+
+    // 1. 레지스터 주소(1바이트)를 쓰고, 2바이트를 읽습니다.
+    rc = i2c_write_read(i2c0, LSM6DSO_I2C_ADDR, &reg, 1, raw_data, 2);
+    if (rc)
+        return rc;
+
+    // 2. Little-Endian 순서로 16비트를 재구성합니다.
+    // LSB (raw_data[0]) + (MSB (raw_data[1]) << 8)
+    *data_out = (uint16_t)raw_data[0] | ((uint16_t)raw_data[1] << 8);
+
+    return 0; // 성공
+}
+
 /**
- * @brief I2C로 블록 데이터 읽기
+ * @brief I2C로 연속 블록 읽기
  * @param reg 시작 레지스터 주소
  * @param[out] buf 데이터를 저장할 버퍼
  * @param len 읽을 바이트 수
  * @return 0 on success, 음수 에러 코드 on failure.
  */
-static int rd_block(uint8_t reg, uint8_t *buf, uint32_t len)
+static int rd_block(uint8_t reg, uint8_t *buf, size_t len)
 {
     return i2c_write_read(i2c0, LSM6DSO_I2C_ADDR, &reg, 1, buf, len);
+}
+/** @} */
+
+static inline int fifo_set_mode(uint8_t mode)
+{
+    /* 항상 ODR=3.33kHz(0x09<<3=0x48) + mode */
+    return wr_u8(REG_FIFO_CTRL5, (uint8_t)(ODR_FIFO_3k33_SH | (mode & 0x07)));
+}
+
+static inline int fifo_expect_ctrl5(const struct shell *sh, uint8_t expect)
+{
+    uint8_t v = 0;
+    int rc = rd_u8(REG_FIFO_CTRL5, &v);
+    if (rc)
+    {
+        if (sh)
+            shell_print(sh, "rd CTRL5 rc=%d", rc);
+        return rc;
+    }
+    if (v != expect)
+    {
+        if (sh)
+            shell_print(sh, "CTRL5 mismatch: got 0x%02X, want 0x%02X", v, expect);
+        return -EIO;
+    }
+    return 0;
 }
 
 /**
@@ -179,572 +292,976 @@ int lsm6dso_dump_regs(const struct shell *shell)
     return 0;
 }
 
-/*
- ==============================================================================
- * 전역 변수 및 상수 정의
- ==============================================================================
- */
-
 /**
- * @brief 전역 진동 데이터 결과 인스턴스
- */
-vibration_results_t g_vib_results;
-
-/**
- * @brief FIFO 버스트 읽기를 위한 원시(Raw) 버퍼
- * @details 999 샘플 * 7 바이트/샘플 (Tag + XYZ) = 6993 바이트 [cite: 28]
- */
-static uint8_t g_fifo_raw_buf[6993];
-
-/**
- * @name 진동 처리 상수 (요구사항 기반)
- * @{
- */
-#define VIB_N 999                          /**< 샘플 수 (N)  */
-#define VIB_FS 3330.0f                     /**< 샘플링 주파수 (fs) (3.33kHz ODR) [cite: 15, 39] */
-#define VIB_DF (VIB_FS / VIB_N)            /**< 주파수 해상도 (Delta f) (10/3 Hz) [cite: 39] */
-#define VIB_K_MIN 3                        /**< 최소 주파수 인덱스 (10 Hz) [cite: 40] */
-#define VIB_K_MAX 300                      /**< 최대 주파수 인덱스 (1000 Hz) [cite: 40] */
-#define VIB_CG 0.4994994995f               /**< Hann 윈도우 진폭 보정 계수 (CG) [cite: 41, 77] */
-#define VIB_U 0.3746246246f                /**< Hann 윈도우 전력 보정 계수 (U) [cite: 41] */
-#define VIB_SA_4G 0.001196f                /**< ±4g 스케일 팩터 (m/s^2)/LSB [cite: 43] */
-#define VIB_MS2_TO_MG (1.0f / 0.00980665f) /**< m/s^2 를 mg 로 변환 [cite: 66, 75] */
-#define VIB_M_TO_MM 1000.0f                /**< m 를 mm 로 변환 [cite: 114, 120] */
-/** @} */
-
-/**
- * @name DSP 처리용 전역 버퍼
+ * @brief LSM6DSO 센서를 초기화합니다.
+ *
  * @details
- * 스택 오버플로우를 방지하기 위해 BSS 섹션에 정적 할당합니다.
- * 3축이 순차적으로 이 버퍼를 재사용합니다.
- * @{
- */
-/** @brief 전처리(스케일링, DC제거, 윈도우) 후 FFT 입력 버퍼 */
-static float g_dsp_in_buf[VIB_N];
-/** @brief rFFT 출력 버퍼 (복소수) (N=999일 때 (999+1)/2 = 500개) */
-static float complex g_dsp_X_k[(VIB_N + 1) / 2];
-/** @brief 가속도 Peak용 IFFT 입력 버퍼 (대역 필터링됨) */
-static float complex g_dsp_A_k[(VIB_N + 1) / 2];
-/** @brief 속도 Peak용 IFFT 입력 버퍼 (대역 필터링 및 적분됨) */
-static float complex g_dsp_Bv_k[(VIB_N + 1) / 2];
-/** @brief 가속도 Peak 계산용 IFFT 출력 버퍼 */
-static float g_dsp_a_bp[VIB_N];
-/** @brief 속도 Peak 계산용 IFFT 출력 버퍼 */
-static float g_dsp_v_bp[VIB_N];
-/** @} */
-
-/*
- ==============================================================================
- * 중요: FFT/IFFT 스텁 (Stub) 함수
- ==============================================================================
- */
-
-/**
- * @brief N=999 길이의 실수 FFT (Real FFT) 스텁
- * @warning
- * 이것은 실제 구현이 아닙니다!
- * nRF Connect SDK의 표준 CMSIS-DSP 라이브러리는 N=999를 지원하지 않습니다.
- * N=999를 처리할 수 있는 별도의 FFT 구현 (예: Slow DFT)으로
- * 이 함수를 반드시 교체해야 합니다.
+ * - BDU(Block Data Update) 및 IF_INC(주소 자동 증가) 활성화
+ * - I3C 인터페이스 비활성화
+ * - 자이로스코프 파워 다운 (가속도계만 사용)
+ * - FIFO 모드 설정 (Bypass -> Continuous)
+ * - 가속도계 ODR: 3.33 kHz (0x9), FS: ±4g (fs 파라미터 무시, ±4g 고정)
+ * - FIFO BDR: 3.33 kHz (0x9) (가속도계만)
+ * - FIFO Watermark: @ref FIFO_WTM_WORDS (999)
  *
- * @param in 실수 입력 배열 (크기 VIB_N)
- * @param out 복소수 출력 배열 (크기 (VIB_N+1)/2 = 500)
- */
-static void RFFT_N999(float *in, float complex *out)
-{
-    /*
-     * !!! 중요: 실제 N=999 FFT 구현으로 이 코드를 교체하십시오 !!!
-     *
-     * 예:
-     * my_custom_rfft_f32(in, out, VIB_N);
-     *
-     * (참고: CMSIS-DSP의 arm_rfft_fast_f32는 N=1024만 지원합니다)
-     */
-    LOG_WRN("RFFT_N999() is a STUB! Replace with actual N=999 FFT implementation.");
-    // 스텁: 출력을 0으로 초기화
-    memset(out, 0, sizeof(g_dsp_X_k));
-}
-
-/**
- * @brief N=999 길이의 실수 IFFT (Inverse Real FFT) 스텁
- * @warning
- * 이것은 실제 구현이 아닙니다!
- * RFFT_N999()와 쌍을 이루는 실제 IFFT 구현으로 이 함수를
- * 반드시 교체해야 합니다.
+ * @note
+ * 이 함수는 센서의 *파라미터* (ODR, FS)를 설정합니다.
+ * 하지만 @ref lsm6dso_capture_once 함수는 이 함수가 설정한 FIFO 모드(Continuous) 대신, 내부적으로 FIFO를 BYPASS 모드로 직접 전환하여 DRDY 폴링을 수행합니다. 또한, `fs` 파라미터가 주어지지만 실제로는 `FS_XL_4G`로 고정되어 설정됩니다.
  *
- * @param in 복소수 입력 배열 (크기 (VIB_N+1)/2 = 500)
- * @param out 실수 출력 배열 (크기 VIB_N)
- */
-static void IRFFT_N999(float complex *in, float *out)
-{
-    /*
-     * !!! 중요: 실제 N=999 IFFT 구현으로 이 코드를 교체하십시오 !!!
-     *
-     * 예:
-     * my_custom_irfft_f32(in, out, VIB_N);
-     */
-    LOG_WRN("IRFFT_N999() is a STUB! Replace with actual N=999 IFFT implementation.");
-    // 스텁: 출력을 0으로 초기화
-    memset(out, 0, VIB_N * sizeof(float));
-}
-
-/*
- ==============================================================================
- * 센서 제어 함수
- ==============================================================================
- */
-
-/* lsm6dso.c 파일 내 lsm6dso_init 함수 수정 */
-int lsm6dso_init(void)
-{
-    uint8_t who_am_i;
-    RC(rd_u8(REG_WHO_AM_I, &who_am_i));
-
-    if (who_am_i != 0x6C) { // LSM6DSO Who Am I
-        LOG_ERR("LSM6DSO Who Am I check FAILED. Got 0x%02X", who_am_i);
-        return -ENODEV;
-    }
-    LOG_INF("LSM6DSO Who Am I check PASSED. (0x%02X)", who_am_i);
-
-    /* --- [추가] 소프트 리셋 및 재부팅 대기 --- */
-    LOG_INF("Performing soft reset...");
-    RC(wr_u8(REG_CTRL3_C, 0x80)); // SW_RESET=1 (bit 7)
-    k_msleep(10); // 부팅 대기
-    
-    // BDU=1, IF_INC=1
-    RC(wr_u8(REG_CTRL3_C, 0x40 | 0x04)); // 0x44 (BDU=1, IF_INC=1)
-    
-    /* --- 부팅 및 센서 설정 (Sensor 6/7 요구사항) --- */
-    // CTRL9_XL: I3C_disable=1
-    RC(wr_u8(REG_CTRL9_XL, 0x02));
-    // CTRL1_XL: ODR_XL=3.33 kHz, FS_XL=±4g
-    RC(wr_u8(REG_CTRL1_XL, 0x90)); // ODR=1001b, FS=00b
-    // CTRL2_G: ODR_G=Power-down (자이로 OFF)
-    RC(wr_u8(REG_CTRL2_G, 0x00));
-
-    /* --- FIFO 설정 (Sensor 6/7 요구사항) --- */
-    // FIFO_CTRL3: BDR_XL=3.33 kHz
-    RC(wr_u8(REG_FIFO_CTRL3, 0x09)); // BDR_XL=1001b
-    // FIFO_CTRL1/2: WTM = 999 워드 (0x3E7)
-    RC(wr_u8(REG_FIFO_CTRL1, 0xE7)); // WTM_L (999 & 0xFF)
-    RC(wr_u8(REG_FIFO_CTRL2, 0x03)); // WTM_H (999 >> 8)
-    
-    // [추가] FIFO_CTRL5: ODR_FIFO=3.33kHz (센서 7 요구사항 반영)
-    // ODR_FIFO=1001b (bit 2:4) + FIFO_MODE=000b (bit 0:2, 나중에 리셋에서 변경)
-    RC(wr_u8(REG_FIFO_CTRL5, 0x90)); // ODR_FIFO = 3.33k
-    
-    // FIFO_CTRL4: FIFO_MODE=Bypass(000b), STOP_ON_WTM=1
-    RC(wr_u8(REG_FIFO_CTRL4, 0x01)); // 초기 상태는 Bypass로 설정
-    
-    LOG_INF("LSM6DSO initialized (ODR=3.33k, FIFO_WTM=999)");
-    return 0;
-}
-
-/**
- * @brief FIFO를 리셋합니다. (Bypass 모드 -> FIFO 모드) [cite: 22]
- */
-/* lsm6dso_fifo_reset 함수 수정 */
-static int lsm6dso_fifo_reset(void)
-{
-    uint32_t t_start = k_uptime_get_32();
-    int rc;
-
-    // 1. FIFO_MODE=Bypass(000b), STOP_ON_WTM=1 유지 (FIFO 비활성화)
-    //    -> 이 시점에서 FIFO는 비워짐 (클리어)
-    rc = wr_u8(REG_FIFO_CTRL4, 0x01);
-    LOG_DBG("FIFO_CTRL4->0x01 (Bypass): rc=%d, t=%u", rc, (unsigned)(k_uptime_get_32() - t_start));
-    if (rc) return rc;
-    
-    k_msleep(2); // FIFO 클리어 및 모드 전환 대기
-
-    // 2. FIFO_MODE=FIFO(001b), STOP_ON_WTM=1 유지 (캡처 시작)
-    rc = wr_u8(REG_FIFO_CTRL4, 0x03);
-    LOG_DBG("FIFO_CTRL4->0x03 (FIFO Mode): rc=%d, t=%u", rc, (unsigned)(k_uptime_get_32() - t_start));
-    if (rc) return rc;
-
-    return 0;
-}
-
-/**
- * @brief FIFO가 찰 때까지 폴링한 후, 999개 샘플을 버스트로 읽어옵니다.
- *
+ * @param fs 사용할 Full-Scale (현재 구현에서는 무시되고 ±4g로 고정됨)
  * @return 0 on success, 음수 에러 코드 on failure.
  */
-/* lsm6dso_read_fifo_burst 함수 수정 */
-static int lsm6dso_read_fifo_burst(void)
+int lsm6dso_init()
 {
-    uint8_t b[2]; // STATUS1, 2 레지스터 값을 받을 버퍼
-    uint16_t diff = 0;
-    int retries = 200; // 1초 타임아웃으로 증가
-    uint32_t t_start = k_uptime_get_32();
-    uint8_t ctrl1_xl, fifo_ctrl4, who_am_i;
+    /* 0) 소프트 리셋(선택) */
+    /* wr_u8(REG_CTRL3_C, CTRL3_C_SW_RESET); k_sleep(K_MSEC(2)); */
 
-    // [디버그] 초기 상태 및 설정 값 확인 (오류 직전 상태 파악)
-    // FIFO_CTRL4 (모드)와 CTRL1_XL (ODR/FS)이 핵심
-    LOG_RC(rd_u8(REG_CTRL1_XL, &ctrl1_xl), "CTRL1_XL");
-    LOG_RC(rd_u8(REG_FIFO_CTRL4, &fifo_ctrl4), "FIFO_CTRL4");
-    LOG_RC(rd_u8(REG_WHO_AM_I, &who_am_i), "WHO_AM_I");
-    
-    // (rc가 -116인 경우도 많으므로, LOG_ERR 대신 LOG_DBG 사용)
-    LOG_DBG("Poll start check: WHO=0x%02X, XL=0x%02X, FIFO_C4=0x%02X", 
-            who_am_i, ctrl1_xl, fifo_ctrl4);
+    RC(wr_u8(REG_CTRL3_C, CTRL3_C_BDU | CTRL3_C_IF_INC)); // BDU=1, IF_INC=1
+    RC(wr_u8(REG_CTRL9_XL, CTRL9_XL_I3C_DISABLE));        // I3C disable
+    RC(wr_u8(REG_CTRL2_G, ODR_G_POWER_DOWN));             // Gyro off
 
-    // 1. 워터마크 확인 (폴링) - DIFF_FIFO 개수 직접 확인
-    do
+    /* 타임스탬프 끄기 + 가속도만 배치 */
+    RC(wr_u8(REG_CTRL10_C, 0x00));   /* TIMESTAMP_EN=0 */
+    RC(wr_u8(REG_FIFO_CTRL3, 0x09)); /* XL only @ 3.33kHz, Gyro off */
+
+    /* 2) XL ODR/FS 설정 (3.33 kHz, ±4g) */
+    /* 3.33 kHz, ±4g  (ODR_XL=0b1010, FS=±4g → 0xA8) */
+    RC(wr_u8(REG_CTRL1_XL, 0x98));
+
+    /* 안전하게 BYPASS로 두고 시작 (ODR_FIFO=3.33kHz 설정은 유지) */
+    RC(wr_u8(REG_FIFO_CTRL5, (uint8_t)(ODR_FIFO_3k33_SH | FIFO_MODE_BYPASS)));
+
+    /* 3) FIFO 배치 속도(BDR) 설정 — XL만 3.333 kHz로 활성화, Gyro는 0 */
+    /* BDR_GY=0000, BDR_XL=1001(3.333 kHz) -> 0x09 */
+    // RC(wr_u8(REG_FIFO_CTRL3, (0x0 << 4) | 0x9));
+
+    /* 4) 워터마크(999 워드) 설정 */
+    RC(wr_u8(REG_FIFO_CTRL1, (FIFO_WTM_WORDS & 0xFF)));
+    RC(wr_u8(REG_FIFO_CTRL2, ((FIFO_WTM_WORDS >> 8) & 0x0F)));
+
+    /* 5) FIFO 모드 진입 (Continuous) */
+    /* @note lsm6dso_capture_once()는 이 설정을 덮어쓰고 BYPASS(0x00)를 사용함 */
+    RC(wr_u8(REG_FIFO_CTRL5, (uint8_t)(ODR_FIFO_3k33_SH | FIFO_MODE_CONTINUOUS)));
+
+    /* 레지스터 변경이 안되서 재 입력 */
+    RC(wr_u8(REG_CTRL10_C, 0x00));           /* 타임스탬프 OFF */
+    RC(wr_u8(REG_FIFO_CTRL3, 0x09));         /* 가속도만 라우팅 */
+    RC(fifo_set_mode(FIFO_MODE_CONTINUOUS)); /* => CTRL5 = 0x48|0x06 = 0x4E */
+
+    return 0;
+}
+
+/**
+ * @defgroup fft_impl 내장 FFT (Fast Fourier Transform) 구현
+ * @details 1024-포인트, Radix-2, 단정도 부동소수점, in-place FFT.
+ * @{
+ */
+
+/* FFT 트위들 팩터(Twiddle Factor) 캐시 */
+static float tw_re[NFFT / 2], tw_im[NFFT / 2];
+static bool tw_ready = false; /**< 트위들 팩터 초기화 여부 */
+
+/**
+ * @brief FFT 트위들 팩터 (e^(-j*2*pi*k/N))를 미리 계산하여 캐시합니다.
+ */
+static void twiddle_init(void)
+{
+    if (tw_ready)
+        return;
+    for (int k = 0; k < NFFT / 2; ++k)
     {
-        int rc;
+        double ang = -2.0 * M_PI * k / (double)NFFT;
+        tw_re[k] = (float)cos(ang);
+        tw_im[k] = (float)sin(ang);
+    }
+    tw_ready = true;
+}
 
-        // STATUS1(0x3A), STATUS2(0x3B) 블록 읽기
-        rc = rd_block(REG_FIFO_STATUS1, b, 2);
+/**
+ * @brief 비트 반전(bit-reversal) 인덱스를 계산합니다.
+ * @param x 원본 인덱스
+ * @param log2n NFFT의 log2 (e.g., 1024 -> 10)
+ * @return 비트 반전된 인덱스
+ */
+static unsigned bitrev(unsigned x, int log2n)
+{
+    unsigned n = 0;
+    for (int i = 0; i < log2n; ++i)
+    {
+        n = (n << 1) | (x & 1);
+        x >>= 1;
+    }
+    return n;
+}
+
+/**
+ * @brief Radix-2 FFT/iFFT (in-place)
+ *
+ * @details
+ * - 입력: `re[0..N-1]` (실수부), `im[0..N-1]` (허수부)
+ * - 실신호 FFT의 경우, `im` 배열은 0으로 초기화되어야 합니다.
+ * - iFFT의 경우, 정규화(1/N)가 포함됩니다.
+ *
+ * @param[in,out] re 실수부 배열
+ * @param[in,out] im 허수부 배열
+ * @param inverse 0=FFT, 0이 아니면=iFFT (역변환)
+ */
+static void fft_radix2(float *re, float *im, int inverse)
+{
+    twiddle_init();
+    const int log2n = 10; /* 2^10 = 1024 */
+
+    /* 1. Bit-reversal permutation */
+    for (unsigned i = 0; i < NFFT; ++i)
+    {
+        unsigned j = bitrev(i, log2n);
+        if (j > i)
+        {
+            float tr = re[i], ti = im[i];
+            re[i] = re[j];
+            im[i] = im[j];
+            re[j] = tr;
+            im[j] = ti;
+        }
+    }
+
+    /* 2. Butterfly stages */
+    for (unsigned len = 2; len <= NFFT; len <<= 1)
+    {
+        unsigned half = len >> 1;
+        unsigned step = NFFT / len;
+        for (unsigned i = 0; i < NFFT; i += len)
+        {
+            for (unsigned k = 0; k < half; ++k)
+            {
+                unsigned idx = k * step;
+                float wr = tw_re[idx];
+                float wi = inverse ? -tw_im[idx] : tw_im[idx]; /* iFFT는 공액 */
+                float ur = re[i + k], ui = im[i + k];
+                float vr = re[i + k + half] * wr - im[i + k + half] * wi;
+                float vi = re[i + k + half] * wi + im[i + k + half] * wr;
+                re[i + k] = ur + vr;
+                im[i + k] = ui + vi;
+                re[i + k + half] = ur - vr;
+                im[i + k + half] = ui - vi;
+            }
+        }
+    }
+
+    /* 3. iFFT 정규화 */
+    if (inverse)
+    {
+        const float invN = 1.0f / (float)NFFT;
+        for (unsigned i = 0; i < NFFT; ++i)
+        {
+            re[i] *= invN;
+            im[i] *= invN;
+        }
+    }
+}
+/** @} */ // end of fft_impl
+
+/**
+ * @defgroup signal_proc 신호 처리 유틸리티
+ * @{
+ */
+
+/**
+ * @brief Hann 윈도우(window)를 생성합니다.
+ * @param[out] w 윈도우 값을 저장할 배열
+ * @param n 윈도우 길이
+ */
+static void make_hann(float *w, int n)
+{
+    if (n <= 1)
+    {
+        w[0] = 1.f;
+        return;
+    }
+    for (int i = 0; i < n; ++i)
+    {
+        /* w(i) = 0.5 * (1 - cos(2*pi*i / (n-1))) */
+        w[i] = 0.5f * (1.0f - cosf(2.0f * (float)M_PI * i / (n - 1)));
+    }
+}
+
+/**
+ * @brief 주파수 대역(Hz)을 FFT bin 인덱스 범위로 변환합니다.
+ * @param fs 샘플링 주파수 (Hz)
+ * @param nfft FFT 포인트 수
+ * @param f_lo 하한 주파수 (Hz)
+ * @param f_hi 상한 주파수 (Hz)
+ * @param[out] kmin 최소 bin 인덱스 (DC=0 제외, 최소 1)
+ * @param[out] kmax 최대 bin 인덱스 (최대 N/2)
+ */
+static void band_to_bins(float fs, int nfft, float f_lo, float f_hi, int *kmin, int *kmax)
+{
+    int a = (int)ceilf(f_lo * nfft / fs);
+    int b = (int)floorf(f_hi * nfft / fs);
+    if (a < 1)
+        a = 1; /* DC(0-bin) 제외 */
+    if (b > nfft / 2)
+        b = nfft / 2;
+    if (b < a)
+        b = a;
+    *kmin = a;
+    *kmax = b;
+}
+
+/**
+ * @brief 대역 제한된 시간 파형의 RMS 및 Peak 값을 계산합니다.
+ *
+ * @details
+ * 이 함수는 다음 단계를 수행합니다:
+ * 1. LSB 데이터에서 DC(평균) 제거 및 m/s^2 스케일링
+ * 2. Hann 윈도우 적용
+ * 3. NFFT(1024) 포인트로 제로 패딩
+ * 4. FFT 수행 (@ref fft_radix2)
+ * 5. 지정된 주파수 대역(f_lo ~ f_hi) *외*의 스펙트럼을 0으로 마스킹 (대역 통과)
+ * 6. iFFT 수행 (@ref fft_radix2)
+ * 7. 결과로 나온 "대역 제한된 시간 파형"에서 RMS 및 Peak 값을 계산 (단위: m/s^2)
+ *
+ * @param lsb [in] 원시 LSB 데이터 배열
+ * @param n [in] LSB 데이터 샘플 수 (최대 @ref NFFT)
+ * @param lsb_to_ms2 [in] LSB-to-m/s^2 스케일 팩터
+ * @param f_lo [in] 대역 하한 (Hz)
+ * @param f_hi [in] 대역 상한 (Hz)
+ * @param[out] out_rms_x100 [out] 계산된 RMS 값 (m/s^2 * 100)
+ * @param[out] out_peak_x100 [out] 계산된 Peak 값 (m/s^2 * 100)
+ */
+static void bandlimited_rms_peak_ms2_x100(
+    const int16_t *lsb, uint16_t n, float lsb_to_ms2,
+    float f_lo, float f_hi, int16_t *out_rms_x100, int16_t *out_peak_x100)
+{
+    /* FFT 및 윈도우용 정적 버퍼 (스택 방지) */
+    static float re[NFFT], im[NFFT], win[NFFT];
+    static bool win_ready = false;
+    if (!win_ready)
+    {
+        make_hann(win, NFFT);
+        win_ready = true;
+    }
+
+    /* NFFT보다 샘플이 많으면 NFFT개만 사용 */
+    const int useN = (n < NFFT) ? n : NFFT;
+
+    /* 0) DC(평균) 제거: LSB 평균을 빼고 물리단위로 변환 */
+    float mean_lsb = 0.f;
+    for (int i = 0; i < useN; ++i)
+        mean_lsb += lsb[i];
+    mean_lsb = (useN > 0) ? (mean_lsb / useN) : 0.f;
+
+    /* 1) 윈도우 적용 및 제로 패딩 */
+    for (int i = 0; i < useN; ++i)
+    {
+        float v = ((float)lsb[i] - mean_lsb) * lsb_to_ms2; // 평균 제거 및 스케일링
+        float w = win[i];
+        re[i] = v * w; /* 창을 평균 제거 후에 곱함 */
+        im[i] = 0.f;
+    }
+    for (int i = useN; i < NFFT; ++i)
+    {
+        re[i] = 0.f;
+        im[i] = 0.f;
+    } /* Zero-padding */
+
+    /* 2) FFT */
+    fft_radix2(re, im, 0);
+
+    /* 3) 주파수 대역 필터링 (Band-pass) */
+    int kmin = 0, kmax = 0;
+    band_to_bins(IMU_FS_HZ, NFFT, f_lo, f_hi, &kmin, &kmax);
+
+    /* 대역 외(out-of-band) 주파수 제거 (DC, Nyquist 포함) */
+    for (int k = 1; k < NFFT / 2; ++k)
+    {
+        if (k < kmin || k > kmax)
+        {
+            re[k] = im[k] = 0.f;               /* Positive freq */
+            re[NFFT - k] = im[NFFT - k] = 0.f; /* Negative freq (mirror) */
+        }
+    }
+    re[0] = im[0] = 0.f;               /* DC 제거 */
+    re[NFFT / 2] = im[NFFT / 2] = 0.f; /* Nyquist 제거 */
+
+    /* 4) iFFT (시간 영역 복원) */
+    fft_radix2(re, im, 1);
+
+    /* 5) 시간영역에서 RMS/Peak 계산 (원본 샘플 길이 M=useN 기준) */
+    float peak = 0.f, sumsq = 0.f;
+    const int M = useN;
+    for (int i = 0; i < M; ++i)
+    {
+        float a = re[i];
+        float au = a > 0 ? a : -a; /* fabsf(a) */
+        if (au > peak)
+            peak = au;
+        sumsq += a * a;
+    }
+    float rms = (M > 0) ? sqrtf(sumsq / (float)M) : 0.f;
+
+    /* 100을 곱한 정수형으로 저장 (소수점 2자리) */
+    *out_peak_x100 = (int16_t)(peak * 100.0f + 0.5f);
+    *out_rms_x100 = (int16_t)(rms * 100.0f + 0.5f);
+}
+
+/* 가속도 TAG 값(하위 nibble) — 대부분 0x01, 일부 리비전/설정에서 0x02일 수도 있어
+ * 우선 0x01을 기본으로 하되, 청크에서 다수결로 동적으로 검출하여 사용
+ */
+// static uint8_t detect_acc_tag(const uint8_t *buf, size_t len)
+// {
+//     int cnt1=0, cnt2=0;
+//     for (size_t off=0; off+7 <= len && off < 28; ++off) {
+//         uint8_t t = buf[off] & 0x0F;
+//         if (t == 0x01) cnt1++;
+//         if (t == 0x02) cnt2++;
+//     }
+//     return (cnt2 > cnt1) ? 0x02 : 0x01;
+// }
+
+#ifndef MIN
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+#endif
+
+/* TAG 후보 검출 (가속도는 보통 0x01, 환경에 따라 0x02 케이스도 있어 다수결로 선택) */
+static uint8_t detect_acc_tag(const uint8_t *buf, size_t len)
+{
+    int c1 = 0, c2 = 0;
+    size_t probe = MIN(len, (size_t)64);
+    for (size_t i = 0; i + 7 <= probe; ++i)
+    {
+        uint8_t t = buf[i] & 0x0F;
+        if (t == 0x01)
+            c1++;
+        else if (t == 0x02)
+            c2++;
+    }
+    return (c2 > c1) ? 0x02 : 0x01;
+}
+
+/* 청크 내에서 'acc_tag'가 7바이트 간격으로 반복되는 시작 오프셋을 찾는다.
+ * 못 찾으면 0 리턴(가장 앞에서부터 시도).
+ */
+// static size_t find_sync_7B(const uint8_t *buf, size_t len, uint8_t acc_tag)
+// {
+//     /* 후보 오프셋 0..6 을 시험 */
+//     for (size_t base=0; base<7 && base+7 <= len; ++base) {
+//         size_t ok=0;
+//         for (size_t i=base; i+7 <= len; i+=7) {
+//             if ( (buf[i] & 0x0F) == acc_tag ) { ok++; }
+//             else break;
+//         }
+//         if (ok >= 2) return base; /* 최소 2패킷 이상 연속이면 신뢰 */
+//     }
+//     return 0;
+// }
+
+/* 7바이트 간격으로 TAG가 반복되는 시작 오프셋 찾기 (간단 휴리스틱) */
+static size_t find_sync_7B(const uint8_t *buf, size_t len, uint8_t acc_tag)
+{
+    size_t limit = MIN(len, (size_t)56);
+    for (size_t base = 0; base < 7 && base + 14 <= limit; ++base)
+    {
+        size_t ok = 0;
+        for (size_t i = base; i + 7 <= len; i += 7)
+        {
+            if ((buf[i] & 0x0F) == acc_tag)
+                ok++;
+            else
+                break;
+        }
+        if (ok >= 2)
+            return base;
+    }
+    return 0;
+}
+
+static void fifo_debug_dump_config(const char *tag)
+{
+    uint8_t c1 = 0, c3 = 0, c4 = 0, c5 = 0;
+    uint8_t who = 0;
+
+    rd_u8(REG_WHO_AM_I, &who);
+    rd_u8(REG_CTRL1_XL, &c1);
+    rd_u8(REG_FIFO_CTRL3, &c3);
+    rd_u8(REG_FIFO_CTRL4, &c4);
+    rd_u8(REG_FIFO_CTRL5, &c5);
+
+    LOG_INF("FIFOcap[%s] WHO_AM_I=0x%02X, CTRL1_XL=0x%02X, FIFO_CTRL3=0x%02X, FIFO_CTRL4=0x%02X, FIFO_CTRL5=0x%02X",
+            tag ? tag : "",
+            who, c1, c3, c4, c5);
+}
+
+/* 가속도 DRDY + OUTX/Y/Z 한 샘플 디버그 */
+static void lsm6dso_debug_one_sample(const char *tag)
+{
+    uint8_t st = 0;
+    uint8_t buf[6] = {0};
+
+    int rc1 = rd_u8(REG_STATUS_REG, &st);
+    int rc2 = rd_block(REG_OUTX_L_A, buf, sizeof(buf));
+
+    if (rc1 || rc2)
+    {
+        LOG_ERR("DBG_SAMPLE[%s] rd err: st=%d, xyz=%d", tag ? tag : "", rc1, rc2);
+        return;
+    }
+
+    int16_t x = (int16_t)((uint16_t)buf[0] | ((uint16_t)buf[1] << 8));
+    int16_t y = (int16_t)((uint16_t)buf[2] | ((uint16_t)buf[3] << 8));
+    int16_t z = (int16_t)((uint16_t)buf[4] | ((uint16_t)buf[5] << 8));
+
+    LOG_INF("DBG_SAMPLE[%s] STATUS=0x%02X (XLDA=%d), RAW X=%d, Y=%d, Z=%d",
+            tag ? tag : "",
+            st, (st & XLDA_BIT) ? 1 : 0,
+            x, y, z);
+}
+
+/**
+ * @brief 3.33kHz ODR에서 DRDY 폴링을 사용하여 가속도 데이터를 캡처하고 통계를 계산합니다.
+ *
+ * @details
+ * 이 함수는 FIFO를 BYPASS 모드로 직접 설정하여 DRDY(Data Ready) 폴링 방식을 사용합니다.
+ *
+ * 1. FIFO를 BYPASS 모드로 설정합니다.
+ * 2. 약 330ms 동안 또는 최대 999개 샘플을 수집할 때까지
+ * REG_STATUS_REG (0x1E)의 XLDA 비트(BIT 0)를 폴링(polling)합니다.
+ * 3. 새 데이터(XLDA=1)가 준비되면 REG_OUTX_L_A (0x28)부터 6바이트를 읽어
+ * g_ax, g_ay, g_az 전역 버퍼에 저장합니다.
+ * 4. 캡처가 완료되면 전체 대역(Broadband)의 RMS/Peak (m/s^2)를 계산합니다.
+ * 5. bandlimited_rms_peak_ms2_x100 를 호출하여
+ * 10-1000 Hz 대역의 RMS/Peak (m/s^2)를 계산합니다.
+ * 6. 모든 결과를 lsm6dso_stats_t 구조체에 채웁니다.
+ *
+ * @param[out] out 통계 결과를 저장할 lsm6dso_stats_t 구조체 포인터
+ * @return 0 on success (최소 1개 샘플 수집), -EINVAL if out is NULL,
+ * -EIO if no samples collected, or I2C 에러 코드.
+ */
+
+ #if 1
+int lsm6dso_capture_once(lsm6dso_stats_t *out)
+{
+    if (!out)
+        return -EINVAL;
+    memset(out, 0, sizeof(*out));
+
+    /* ------------------------------
+     * Stage -1: 현재 레지스터 상태 확인
+     * ------------------------------ */
+    fifo_debug_dump_config("DBG0_BEFORE");
+    lsm6dso_debug_one_sample("BEFORE_CAP");
+
+    /* ------------------------------
+     * Stage 0: 가속도 ODR + FIFO BDR 강제 재설정
+     * ------------------------------ */
+    /* 3.33 kHz, ±4g 로 다시 한 번 명시적으로 세팅
+       (값은 기존에 쓰시던 값으로 맞춰도 됩니다. 예전엔 0xA8 코멘트, 지금은 0x98 사용 중이었음) */
+    RC(wr_u8(REG_CTRL1_XL, 0xA8)); /* ODR_XL=3.33k, FS=±4g */
+
+    /* FIFO 배치 속도: XL만 3.333 kHz로 FIFO에 기록, Gyro는 0 */
+    RC(wr_u8(REG_FIFO_CTRL3, 0x09)); /* BDR_GY=0000, BDR_XL=1001(3.333 kHz) */
+
+    /* 디버그용으로 다시 읽어서 찍기 */
+    fifo_debug_dump_config("DBG1_AFTER_ODR_BDR");
+
+    /* 타임스탬프는 끄고 시작 */
+    RC(wr_u8(REG_CTRL10_C, 0x00));
+
+    /* ------------------------------
+     * Stage 1: FIFO 리셋 (BYPASS)
+     * ------------------------------ */
+    LOG_INF("FIFOcap[0] reset: BYPASS 진입");
+
+    RC(fifo_set_mode(FIFO_MODE_BYPASS));
+    k_sleep(K_MSEC(2));
+
+    /* BYPASS 모드(0x00) + ODR 3.33k(0x48) = 0x48이어야 정상 */
+    RC(fifo_expect_ctrl5(NULL, (uint8_t)(ODR_FIFO_3k33_SH | FIFO_MODE_BYPASS)));
+    LOG_INF("FIFOcap[0] BYPASS OK, CTRL5=0x48 기대값 일치");
+
+    /* 워터마크 999 word 설정 */
+    RC(wr_u8(REG_FIFO_CTRL1, (uint8_t)(FIFO_WTM_WORDS & 0xFF)));
+    RC(wr_u8(REG_FIFO_CTRL2, (uint8_t)((FIFO_WTM_WORDS >> 8) & 0x0F)));
+    LOG_INF("FIFOcap[1] WTM=%u words 설정", FIFO_WTM_WORDS);
+
+    /* STOP_ON_WTM=1 (OVERWRITE 방지) */
+    RC(wr_u8(REG_FIFO_CTRL4, STOP_ON_WTM_BIT));
+    LOG_INF("FIFOcap[2] STOP_ON_WTM=1 설정");
+
+    /* ------------------------------
+     * Stage 2: FIFO 모드 진입 
+     * ------------------------------ */
+    RC(fifo_set_mode(FIFO_MODE_FIFO));
+    RC(fifo_expect_ctrl5(NULL, (uint8_t)(ODR_FIFO_3k33_SH | FIFO_MODE_FIFO)));
+    LOG_INF("FIFOcap[3] FIFO_MODE=FIFO 진입 (ODR_FIFO=3.33k)");
+
+    /* 여기서부터 센서가 FIFO로 데이터를 밀어넣기 시작해야 함 */
+
+    /* 0.31 s 정도 기다려서 WTM 근처까지 채우기 (N=999 기준) */
+    k_sleep(K_MSEC(310));
+
+    /* ------------------------------
+     * Stage 3: DIFF_FIFO 확인
+     * ------------------------------ */
+    uint16_t diff_w = 0;
+    bool wtm = false;
+
+    for (int tries = 0; tries < 100; ++tries)
+    {
+        uint8_t st[2] = {0};
+        int rc = rd_block(REG_FIFO_STATUS1, st, sizeof(st));
         if (rc)
         {
-            LOG_ERR("I2C Fail on FIFO_STATUS: %d", rc);
+            LOG_ERR("FIFOcap[4] rd FIFO_STATUS rc=%d", rc);
             return rc;
         }
 
-        diff = ((uint16_t)(b[1] & 0x0F) << 8) | b[0];
-        uint8_t status2_val = b[1]; // FIFO_STATUS2 값
+        diff_w = (uint16_t)(((uint16_t)(st[1] & 0x0F) << 8) | st[0]);
+        wtm = (st[1] & BIT(7)) != 0;
 
-        // [디버그] 폴링 중간 상태 로깅 (50ms마다, 10회마다)
-        if ((200 - retries) % 10 == 0)
-        {
-            LOG_DBG("t=%u, DIFF=%u, STAT1=0x%02X, STAT2=0x%02X (WTM=%d, FULL=%d, OVR=%d)",
-                    (unsigned)(k_uptime_get_32() - t_start),
-                    diff, b[0], b[1],
-                    (status2_val >> 7) & 0x01,  // WTM_IA
-                    (status2_val >> 5) & 0x01,  // FIFO_FULL_IA
-                    (status2_val >> 6) & 0x01); // OVR_LA
-        }
-
-        // 999개 이상 샘플이 모였으면 루프 탈출
-        if (diff >= FIFO_WTM_WORDS)
-        {
+        if (diff_w >= FIFO_WTM_WORDS)
             break;
-        }
 
-        k_msleep(5); // 5ms 대기
-    } while (--retries > 0);
-
-    if (retries == 0)
-    {
-        LOG_ERR("FIFO sample count TIMEOUT! (Diff=%u, Expected %u) after %u ms. RC=-116",
-                diff, FIFO_WTM_WORDS, (unsigned)(k_uptime_get_32() - t_start));
-        return -ETIMEDOUT; // -ETIMEDOUT은 Zephyr의 -116
+        /* 아직 999에 못 미치면 2ms씩 더 기다려봄 */
+        k_sleep(K_MSEC(2));
     }
 
-    // WTM이 아닌 오버플로우로 채워진 경우 (경고 로그는 유지)
-    if (diff != FIFO_WTM_WORDS)
+    out->wtm_reached = (diff_w >= FIFO_WTM_WORDS) || wtm;
+    LOG_INF("FIFOcap[4] DIFF_FIFO=%u words, WTM_REACHED=%d",
+            diff_w, out->wtm_reached ? 1 : 0);
+
+    if (diff_w == 0)
     {
-        LOG_WRN("FIFO WTM reached, but count is %u (expected %u). Proceeding.", diff, FIFO_WTM_WORDS);
-    }
+        LOG_WRN("FIFOcap: DIFF_FIFO=0, FIFO에 데이터 없음");
 
-    // 2. 단일 버스트 읽기 (6993 바이트)
-    // [디버그] 버스트 읽기 직전 로그
-    uint32_t t_burst_start = k_uptime_get_32();
-    LOG_DBG("FIFO count reached. Starting %zu byte burst read...", sizeof(g_fifo_raw_buf));
+        /* 추가 디버그: 이 시점 레지스터 재확인 */
+        fifo_debug_dump_config("DBG2_DIFF0");
 
-    // 버스트 읽기
-    int rc = rd_block(REG_FIFO_DATA_OUT_TAG, g_fifo_raw_buf, sizeof(g_fifo_raw_buf));
-    if (rc)
-    {
-        LOG_ERR("I2C Fail on FIFO burst read: %d", rc);
-        return rc;
-    }
+        /* 1) XL이 실제로 도는지 확인 */
+        lsm6dso_debug_one_sample("AFTER_DIFF0");
 
-    // [디버그] 버스트 읽기 후 로그
-    LOG_DBG("Burst read complete in %u ms.", (unsigned)(k_uptime_get_32() - t_burst_start));
-
-    // 3. 원시 버퍼를 3축 (g_ax, g_ay, g_az)으로 파싱
-    // (이하 동일)
-    for (int i = 0; i < VIB_N; i++)
-    {
-        size_t offset = i * 7;
-        // uint8_t tag = g_fifo_raw_buf[offset]; // (필요시) tag(0x01) 검사
-        g_ax[i] = (int16_t)((g_fifo_raw_buf[offset + 2] << 8) | g_fifo_raw_buf[offset + 1]);
-        g_ay[i] = (int16_t)((g_fifo_raw_buf[offset + 4] << 8) | g_fifo_raw_buf[offset + 3]);
-        g_az[i] = (int16_t)((g_fifo_raw_buf[offset + 6] << 8) | g_fifo_raw_buf[offset + 5]);
-    }
-
-    return 0;
-}
-
-/*
- ==============================================================================
- * 진동 처리 (DSP) 함수
- ==============================================================================
- */
-
-/**
- * @brief 단일 축에 대해 가속도/속도 RMS 및 Peak를 계산합니다.
- *
- * @param raw_data [in] 999개의 LSB 샘플 배열 (g_ax, g_ay, g_az 중 하나)
- * @param axis_index [in] 결과를 저장할 축 인덱스 (0=X, 1=Y, 2=Z)
- */
-static void lsm6dso_process_axis(int16_t *raw_data, int axis_index)
-{
-    /* --- 1, 2. 입력/전처리 (스케일링, DC 제거) [cite: 47, 48] --- */
-    double mean = 0.0;
-    for (int n = 0; n < VIB_N; n++)
-    {
-        mean += (double)raw_data[n];
-    }
-    mean /= VIB_N;
-    mean *= VIB_SA_4G; // LSB 평균 -> (m/s^2) 평균
-
-    /* --- 3. Hann 윈도우 적용 [cite: 49, 50] --- */
-    for (int n = 0; n < VIB_N; n++)
-    {
-        float a_n = (float)raw_data[n] * VIB_SA_4G;                      // a[n]
-        float a0_n = a_n - (float)mean;                                  // a0[n] (DC 제거)
-        float w_n = 0.5f * (1.0f - cosf(2.0f * M_PI * n / (VIB_N - 1))); // w[n]
-        g_dsp_in_buf[n] = a0_n * w_n;                                    // x[n]
-    }
-
-    /* --- 4. FFT (rFFT) [cite: 52, 98] --- */
-    // g_dsp_in_buf (N=999) -> g_dsp_X_k (N=500, complex)
-    RFFT_N999(g_dsp_in_buf, g_dsp_X_k);
-
-    float a_rms_sum = 0.0f;
-    float v_rms_sum = 0.0f;
-    const float U_FS_N = VIB_U * VIB_FS * VIB_N;
-
-    // g_dsp_A_k, g_dsp_Bv_k 0으로 초기화
-    memset(g_dsp_A_k, 0, sizeof(g_dsp_A_k));
-    memset(g_dsp_Bv_k, 0, sizeof(g_dsp_Bv_k));
-
-    /* --- 5, 6, 7, 8 (가속도/속도 스펙트럼, PSD, RMS/Peak 동시 처리) --- */
-    // k=0 ~ (N-1)/2 (즉, 0 ~ 499) 까지 순회
-    for (int k = 0; k <= (VIB_N - 1) / 2; k++)
-    {
-        // g_dsp_X_k[k] 는 X[k] (복소수)
-        float mag_Xk_sq = cpowf(cabsf(g_dsp_X_k[k]), 2);
-        float Paa_k;
-
-        // 5. 가속도 PSD (Paa) [cite: 53, 54]
-        if (k == 0)
+        /* 2) DIFF_FIFO가 0이어도 FIFO_DATA_OUT_TAG에서 뭔가 나오는지 확인 */
+        uint8_t fifo_dbg[21] = {0}; /* TAG+XYZ 3세트(3*7) */
+        uint8_t reg = REG_FIFO_DATA_OUT_TAG;
+        int rc_dbg = i2c_write_read(i2c0, LSM6DSO_I2C_ADDR,                                    &reg, 1,                                    fifo_dbg, sizeof(fifo_dbg));
+        if (rc_dbg)
         {
-            Paa_k = mag_Xk_sq / U_FS_N;
+            LOG_ERR("FIFOcap[DBG_FIFO] i2c_write_read rc=%d", rc_dbg);
         }
         else
         {
-            Paa_k = 2.0f * mag_Xk_sq / U_FS_N;
+            LOG_INF("FIFOcap[DBG_FIFO] first 21B: "
+                    "%02X %02X %02X %02X %02X %02X %02X "
+                    "%02X %02X %02X %02X %02X %02X %02X "
+                    "%02X %02X %02X %02X %02X %02X %02X",
+                    fifo_dbg[0], fifo_dbg[1], fifo_dbg[2], fifo_dbg[3], fifo_dbg[4], fifo_dbg[5], fifo_dbg[6],
+                    fifo_dbg[7], fifo_dbg[8], fifo_dbg[9], fifo_dbg[10], fifo_dbg[11], fifo_dbg[12], fifo_dbg[13],
+                    fifo_dbg[14], fifo_dbg[15], fifo_dbg[16], fifo_dbg[17], fifo_dbg[18], fifo_dbg[19], fifo_dbg[20]);
         }
 
-        // 6, 7, 10, 11. 밴드 마스크 (10-1000Hz, 즉 k=3..300) [cite: 40, 61, 108]
-        if (k >= VIB_K_MIN && k <= VIB_K_MAX)
-        {
-            /* === 가속도 처리 === */
-            // 7. 가속도 RMS (대역 한정) [cite: 63, 64]
-            a_rms_sum += (Paa_k * VIB_DF);
-
-            // 8. 가속도 Peak용 스펙트럼 (A[k]) 저장 [cite: 69, 70]
-            g_dsp_A_k[k] = g_dsp_X_k[k];
-
-            /* === 속도 처리 === */
-            // 5. (속도) 주파수 적분 (V[k]) [cite: 100, 103]
-            float f_k = (float)k * VIB_DF;
-            // V[k] = X[k] / (j * 2 * pi * f_k)
-            float complex Vk = g_dsp_X_k[k] / ((0.0f + 1.0f * I) * 2.0f * M_PI * f_k);
-
-            // 6. (속도) PSD (Pvv) [cite: 105]
-            float mag_Vk_sq = cpowf(cabsf(Vk), 2);
-            float Pvv_k = 2.0f * mag_Vk_sq / U_FS_N; // (k>=3 이므로 k=0 경우는 무시)
-
-            // 8. (속도) RMS (대역 한정) [cite: 111, 112]
-            v_rms_sum += (Pvv_k * VIB_DF);
-
-            // 9. (속도) Peak용 스펙트럼 (Bv[k]) 저장 [cite: 117]
-            g_dsp_Bv_k[k] = Vk;
-        }
-    } // end for k
-
-    /* --- 가속도 RMS 최종 계산 --- */
-    float a_rms = sqrtf(a_rms_sum);
-    g_vib_results.a_rms_mg[axis_index] = a_rms * VIB_MS2_TO_MG;
-
-    /* --- 속도 RMS 최종 계산 --- */
-    float v_rms = sqrtf(v_rms_sum);
-    g_vib_results.v_rms_mmps[axis_index] = v_rms * VIB_M_TO_MM;
-
-    /* --- 9, 10. 가속도 Peak (대역 한정) --- */
-    IRFFT_N999(g_dsp_A_k, g_dsp_a_bp); // 9. a_bp[n] = IFFT(A[k]) [cite: 72]
-    float a_peak = 0.0f;
-    for (int n = 0; n < VIB_N; n++)
-    {
-        float abs_val = fabsf(g_dsp_a_bp[n]);
-        if (abs_val > a_peak)
-        {
-            a_peak = abs_val;
-        }
+        return -EIO; /* rc=-5 */
     }
-    a_peak /= VIB_CG; // 10. a_Peak = max(|a_bp[n]|) / CG [cite: 74]
-    g_vib_results.a_peak_mg[axis_index] = a_peak * VIB_MS2_TO_MG;
 
-    /* --- 10, 11. 속도 Peak (대역 한정) --- */
-    IRFFT_N999(g_dsp_Bv_k, g_dsp_v_bp); // 10. v_bp[n] = IFFT(Bv[k]) [cite: 118]
-    float v_peak = 0.0f;
-    for (int n = 0; n < VIB_N; n++)
+    /* ------------------------------
+     * Stage 4: FIFO 단일 버스트 읽기
+     * ------------------------------ */
+    uint16_t words_to_read = diff_w;
+    if (words_to_read > FIFO_WTM_WORDS)
+        words_to_read = FIFO_WTM_WORDS;
+
+    uint32_t bytes_req = (uint32_t)words_to_read * FIFO_BYTES_PER_WORD; /* N word × 7B */
+    if (bytes_req > sizeof(g_fifo_raw))
+        bytes_req = sizeof(g_fifo_raw);
+
+    /* 7B 단위 정렬 (혹시라도 잘려서 들어오는 경우 방지) */
+    uint16_t bytes_now = (uint16_t)(bytes_req - (bytes_req % FIFO_BYTES_PER_WORD));
+    if (bytes_now == 0)
     {
-        float abs_val = fabsf(g_dsp_v_bp[n]);
-        if (abs_val > v_peak)
-        {
-            v_peak = abs_val;
-        }
+        LOG_WRN("FIFOcap: bytes_now=0 (정렬 후), DIFF_FIFO=%u", diff_w);
+        return -EIO;
     }
-    v_peak /= VIB_CG; // 11. v_Peak = max(|v_bp[n]|) / CG [cite: 119, 121]
-    g_vib_results.v_peak_mmps[axis_index] = v_peak * VIB_M_TO_MM;
-}
 
-int lsm6dso_capture_and_process(void)
-{
-    LOG_INF("Starting capture & process (N=%d)...", VIB_N);
+    LOG_INF("FIFOcap[5] FIFO burst read: words=%u, bytes=%u", (bytes_now / FIFO_BYTES_PER_WORD), bytes_now);
 
-    // 1. FIFO 리셋
-    RC(lsm6dso_fifo_reset());
-
-    // 2. FIFO 채움 (MCU 슬립)
-    // N=999, fs=3330Hz -> 999 / 3330 = 0.3s
-    // 여유를 두어 310ms 슬립
-    /* k_msleep(310);  <--- 이 줄을 주석 처리하거나 삭제합니다! */
-
-    // 3. FIFO 버스트 읽기 및 파싱
-    //    (내부의 폴링 루프가 k_msleep(5)를 호출하므로
-    //     이 함수 자체가 슬립/대기 역할을 합니다.)
-    LOG_DBG("Waiting for FIFO WTM...");
-    int rc = lsm6dso_read_fifo_burst();
+    uint8_t start_reg = REG_FIFO_DATA_OUT_TAG;
+    int rc = i2c_write_read(i2c0, LSM6DSO_I2C_ADDR,
+                            &start_reg, 1,
+                            g_fifo_raw, bytes_now);
     if (rc)
     {
-        LOG_ERR("Failed to read FIFO burst: %d", rc);
+        LOG_ERR("FIFOcap[5] i2c_write_read rc=%d", rc);
         return rc;
     }
-    LOG_INF("FIFO read complete. Processing 3 axes...");
 
-    // 4. 축별 처리
-    lsm6dso_process_axis(g_ax, 0); // X-axis
-    LOG_DBG("X-axis processed.");
-    lsm6dso_process_axis(g_ay, 1); // Y-axis
-    LOG_DBG("Y-axis processed.");
-    lsm6dso_process_axis(g_az, 2); // Z-axis
-    LOG_DBG("Z-axis processed.");
+    /* ------------------------------
+     * Stage 5: TAG+XYZ 파싱해서 g_ax/g_ay/g_az 채우기
+     * ------------------------------ */
+    uint8_t acc_tag = detect_acc_tag(g_fifo_raw, bytes_now);
+    size_t sync_off = find_sync_7B(g_fifo_raw, bytes_now, acc_tag);
+    LOG_INF("FIFOcap[6] acc_tag=0x%02X, sync_off=%u", acc_tag, (unsigned)sync_off);
 
-    LOG_INF("Processing complete.");
-    LOG_INF("--- Results ---");
-    LOG_INF("A-RMS (mg): X=%.2f, Y=%.2f, Z=%.2f",
-            g_vib_results.a_rms_mg[0], g_vib_results.a_rms_mg[1], g_vib_results.a_rms_mg[2]);
-    LOG_INF("A-Peak(mg): X=%.2f, Y=%.2f, Z=%.2f",
-            g_vib_results.a_peak_mg[0], g_vib_results.a_peak_mg[1], g_vib_results.a_peak_mg[2]);
-    LOG_INF("V-RMS (mm/s): X=%.2f, Y=%.2f, Z=%.2f",
-            g_vib_results.v_rms_mmps[0], g_vib_results.v_rms_mmps[1], g_vib_results.v_rms_mmps[2]);
-    LOG_INF("V-Peak(mm/s): X=%.2f, Y=%.2f, Z=%.2f",
-            g_vib_results.v_peak_mmps[0], g_vib_results.v_peak_mmps[1], g_vib_results.v_peak_mmps[2]);
+    uint16_t n = 0;
+    for (size_t i = sync_off;
+         i + FIFO_BYTES_PER_WORD <= bytes_now && n < FIFO_WTM_WORDS;
+         i += FIFO_BYTES_PER_WORD)
+    {
+        uint8_t tag = g_fifo_raw[i] & 0x0F;
+        if (tag != acc_tag)
+        {
+            /* 다른 TAG가 나오면 가속도 연속 구간 끝난 것으로 판단 */
+            break;
+        }
+
+        int16_t x = (int16_t)((uint16_t)g_fifo_raw[i + 1] | ((uint16_t)g_fifo_raw[i + 2] << 8));
+        int16_t y = (int16_t)((uint16_t)g_fifo_raw[i + 3] | ((uint16_t)g_fifo_raw[i + 4] << 8));
+        int16_t z = (int16_t)((uint16_t)g_fifo_raw[i + 5] | ((uint16_t)g_fifo_raw[i + 6] << 8));
+
+        g_ax[n] = x;
+        g_ay[n] = y;
+        g_az[n] = z;
+        ++n;
+    }
+
+    out->n = n;
+    LOG_INF("FIFOcap[7] parsed accel samples: n=%u (목표 N=%u)", n, FIFO_WTM_WORDS);
+
+    if (n == 0)
+    {
+        LOG_WRN("FIFOcap: 가속도 샘플을 하나도 파싱하지 못함");
+        return -EIO;
+    }
+
+    /* ------------------------------
+     * Stage 6: 전체대역 RMS/Peak + 10–1000Hz 대역 RMS/Peak 계산
+     * ------------------------------ */
+    const float scale = 0.001196f;
+
+    for (int axis = 0; axis < 3; ++axis)
+    {
+        const int16_t *src = (axis == 0)   ? g_ax
+                             : (axis == 1) ? g_ay
+                                           : g_az;
+
+        /* DC(평균) 제거 */
+        float mean = 0.f;
+        for (uint16_t i = 0; i < n; ++i)
+            mean += src[i];
+        if (n > 0)
+            mean /= (float)n;
+
+        float peak = 0.f;
+        float sumsq = 0.f;
+
+        for (uint16_t i = 0; i < n; ++i)
+        {
+            float a = ((float)src[i] - mean) * scale; /* LSB → m/s^2 + 평균 제거 */
+            float au = (a >= 0.f) ? a : -a;
+            if (au > peak)
+                peak = au;
+            sumsq += a * a;
+        }
+
+        float rms = (n > 0) ? sqrtf(sumsq / (float)n) : 0.f;
+
+        out->peak_ms2_x100[axis] = (int16_t)(peak * 100.0f + 0.5f);
+        out->rms_ms2_x100[axis] = (int16_t)(rms * 100.0f + 0.5f);
+
+        /* 10–1000 Hz 대역 제한 RMS/Peak */
+        bandlimited_rms_peak_ms2_x100(
+            src, n, scale,
+            10.0f, 1000.0f,
+            &out->bl_rms_ms2_x100[axis],
+            &out->bl_peak_ms2_x100[axis]);
+    }
+
+    /* WHO_AM_I 디버그용 */
+    uint8_t who = 0;
+    if (rd_u8(REG_WHO_AM_I, &who) == 0)
+        out->whoami = who;
+
+    /* 캡처 후에는 다시 Continuous 모드로 복귀(기존 동작 유지) */
+    RC(fifo_set_mode(FIFO_MODE_CONTINUOUS));
+    LOG_INF("FIFOcap[8] capture 완료, FIFO_MODE=CONTINUOUS 복귀 (n=%u)", n);
 
     return 0;
 }
 
-/**
- * @brief 1회성 FIFO 캡처 및 가속도 통계(전체/대역) 계산
- *
- * 이 함수는 N=999 샘플을 캡처하여 lsm6dso_stats_t 구조체를 채웁니다.
- * 1. FIFO를 리셋하고 N=999 샘플(약 300ms)을 캡처합니다.
- * 2. 캡처된 원시 데이터(g_ax, g_ay, g_az)를 사용하여 전체 대역(Full-Band)의
- * 시간-도메인 RMS 및 Peak를 계산합니다. (DC 오프셋 제거 포함)
- * 3. 이전에 구현된 lsm6dso_process_axis()를 호출하여 10-1000Hz 대역 제한(Band-Limited)
- * 주파수-도메인 RMS 및 Peak를 계산합니다. (g_vib_results 전역 변수 사용)
- * 4. 모든 결과를 m/s^2 * 100 스케일의 int16_t 고정소수점으로 변환하여 'out' 구조체에 저장합니다.
- *
- * @param out [out] 통계 결과를 저장할 lsm6dso_stats_t 구조체 포인터
- * @return 0 on success, 음수 에러 코드 on failure.
- */
+#else
 int lsm6dso_capture_once(lsm6dso_stats_t *out)
 {
-    // 0. 출력 구조체 초기화
-    memset(out, 0, sizeof(lsm6dso_stats_t));
+    if (!out)
+        return -EINVAL;
+    memset(out, 0, sizeof(*out));
 
-    // 1. FIFO 리셋
-    RC(lsm6dso_fifo_reset());
+    /* -------------------------------------------------
+     * 0) 가속도 설정 재확인 + FIFO 완전 비활성화
+     * ------------------------------------------------- */
+    /* BDU + Auto-increment */
+    RC(wr_u8(REG_CTRL3_C, CTRL3_C_BDU | CTRL3_C_IF_INC));
 
-    // 2. FIFO 채움 대기 (MCU 슬립)
-    // N=999, fs=3330Hz -> 999 / 3330 = 0.3s
-    k_msleep(310); // 여유 시간 포함
+    /* I3C 비활성화 (필요 시) */
+    RC(wr_u8(REG_CTRL9_XL, CTRL9_XL_I3C_DISABLE));
 
-    // 3. FIFO 버스트 읽기 및 파싱
-    LOG_DBG("FIFO full, reading burst...");
-    int rc = lsm6dso_read_fifo_burst();
+    /* 가속도: ODR=3.33kHz, FS=±4g (0xA8) */
+    RC(wr_u8(REG_CTRL1_XL, 0xA8));
 
-    // 4. 디버그 정보 채우기
-    rd_u8(REG_WHO_AM_I, &out->whoami);
-    out->n = VIB_N;
+    /* FIFO 관련 레지스터 클리어 (배치/모드/WTM 모두 OFF) */
+    RC(wr_u8(REG_FIFO_CTRL1, 0x00));
+    RC(wr_u8(REG_FIFO_CTRL2, 0x00));
+    RC(wr_u8(REG_FIFO_CTRL3, 0x00));
+    RC(wr_u8(REG_FIFO_CTRL4, 0x00));
+    /* 혹시나 해서 CTRL5도 BYPASS 모드로 */
+    RC(fifo_set_mode(FIFO_MODE_BYPASS));
 
+    /* 디버그용 WHO */
+    uint8_t who = 0;
+    if (rd_u8(REG_WHO_AM_I, &who) == 0)
+        out->whoami = who;
+
+    /* -------------------------------------------------
+     * 1) DRDY 폴링으로 N=999 샘플 캡처
+     * ------------------------------------------------- */
+    const uint16_t TARGET_N = 999;
+    uint16_t n = 0;
+    uint8_t raw[6]; /* X/Y/Z (L/H) */
+
+    uint32_t t_start = k_uptime_get_32();
+    const uint32_t CAPTURE_TIMEOUT_MS = 1000;   /* 1초 타임아웃 (0.3s면 충분히 끝나야 함) */
+    const uint32_t POLL_INTERVAL_US   = 50;     /* DRDY 폴링 간격 (50us) */
+
+    LOG_INF("DRDYcap: start capture, TARGET_N=%u", TARGET_N);
+
+    while (n < TARGET_N)
+    {
+        /* 타임아웃 체크 */
+        uint32_t dt = k_uptime_get_32() - t_start;
+        if (dt > CAPTURE_TIMEOUT_MS)
+        {
+            LOG_WRN("DRDYcap: timeout, got %u/%u samples (%.1f ms)",
+                    n, TARGET_N, (float)dt);
+            break;
+        }
+
+        uint8_t status = 0;
+        RC(rd_u8(REG_STATUS_REG, &status));
+
+        if (status & XLDA_BIT)
+        {
+            /* 새 샘플 준비됨 → OUTX_L_A ~ OUTZ_H_A 한 번에 읽기 */
+            uint8_t reg = REG_OUTX_L_A;
+            int rc = i2c_write_read(i2c0, LSM6DSO_I2C_ADDR,
+                                    &reg, 1,
+                                    raw, sizeof(raw));
+            if (rc)
+            {
+                LOG_ERR("DRDYcap: i2c_write_read rc=%d (n=%u)", rc, n);
+                return rc;
+            }
+
+            int16_t x = (int16_t)((uint16_t)raw[0] | ((uint16_t)raw[1] << 8));
+            int16_t y = (int16_t)((uint16_t)raw[2] | ((uint16_t)raw[3] << 8));
+            int16_t z = (int16_t)((uint16_t)raw[4] | ((uint16_t)raw[5] << 8));
+
+            g_ax[n] = x;
+            g_ay[n] = y;
+            g_az[n] = z;
+            ++n;
+        }
+        else
+        {
+            /* DRDY 아직 안 떴으면 짧게 대기 */
+            k_busy_wait(POLL_INTERVAL_US);
+        }
+    }
+
+    out->n = n;
+
+    if (n == 0)
+    {
+        LOG_WRN("DRDYcap: no samples captured");
+        return -EIO; /* rc=-5와 동일 계열 에러 */
+    }
+
+    LOG_INF("DRDYcap: captured %u samples (TARGET=%u)", n, TARGET_N);
+
+    /* -------------------------------------------------
+     * 2) DC 제거 + 전체 대역 RMS/Peak 계산
+     * ------------------------------------------------- */
+    const float scale = 0.001196f;
+
+    /* 축별 평균 (DC 컴포넌트) 계산 */
+    float mx = 0.f, my = 0.f, mz = 0.f;
+    for (uint16_t i = 0; i < n; ++i)
+    {
+        mx += (float)g_ax[i];
+        my += (float)g_ay[i];
+        mz += (float)g_az[i];
+    }
+    mx /= (float)n;
+    my /= (float)n;
+    mz /= (float)n;
+
+    float sx = 0.f, sy = 0.f, sz = 0.f;
+    float px = 0.f, py = 0.f, pz = 0.f;
+
+    for (uint16_t i = 0; i < n; ++i)
+    {
+        float x = ((float)g_ax[i] - mx) * scale;
+        float y = ((float)g_ay[i] - my) * scale;
+        float z = ((float)g_az[i] - mz) * scale;
+
+        float ax = fabsf(x);
+        float ay = fabsf(y);
+        float az = fabsf(z);
+
+        if (ax > px) px = ax;
+        if (ay > py) py = ay;
+        if (az > pz) pz = az;
+
+        sx += x * x;
+        sy += y * y;
+        sz += z * z;
+    }
+
+    float rx = sqrtf(sx / (float)n);
+    float ry = sqrtf(sy / (float)n);
+    float rz = sqrtf(sz / (float)n);
+
+    out->peak_ms2_x100[0] = (int16_t)(px * 100.f + 0.5f);
+    out->peak_ms2_x100[1] = (int16_t)(py * 100.f + 0.5f);
+    out->peak_ms2_x100[2] = (int16_t)(pz * 100.f + 0.5f);
+    out->rms_ms2_x100[0]  = (int16_t)(rx * 100.f + 0.5f);
+    out->rms_ms2_x100[1]  = (int16_t)(ry * 100.f + 0.5f);
+    out->rms_ms2_x100[2]  = (int16_t)(rz * 100.f + 0.5f);
+
+    /* -------------------------------------------------
+     * 3) 10–1000 Hz 대역 제한 RMS/Peak (기존 PSD/필터 함수 활용)
+     * ------------------------------------------------- */
+    for (int axis = 0; axis < 3; ++axis)
+    {
+        const int16_t *src = (axis == 0) ? g_ax :
+                             (axis == 1) ? g_ay : g_az;
+
+        bandlimited_rms_peak_ms2_x100(
+            src, n, scale,
+            10.0f, 1000.0f,
+            &out->bl_rms_ms2_x100[axis],
+            &out->bl_peak_ms2_x100[axis]);
+    }
+
+    return 0;
+}
+#endif
+/* ===== FIFO dump (diagnostic) ===== */
+
+static void dump_hex_lines(const struct shell *sh, const uint8_t *p, size_t n)
+{
+    for (size_t i = 0; i < n; i += 16)
+    {
+        char line[16 * 3 + 8];
+        size_t k = 0;
+        k += snprintk(line + k, sizeof(line) - k, "%04x: ", (uint32_t)i);
+        size_t m = MIN((size_t)16, n - i);
+        for (size_t j = 0; j < m; ++j)
+            k += snprintk(line + k, sizeof(line) - k, "%02X ", p[i + j]);
+        shell_print(sh, "%s", line);
+    }
+}
+
+/* FIFO 덤프: STOP_ON_WTM|FIFO로 채운 뒤 bytes_req 바이트 버스트 읽기 → RAW+파싱 출력 */
+int lsm6dso_dump_fifo(const struct shell *shell, uint16_t bytes_req)
+{
+    if (bytes_req == 0)
+        bytes_req = 224;           /* 디폴트 224B */
+    bytes_req -= (bytes_req % 7u); /* 7의 배수로 정렬 */
+    if (bytes_req < 7)
+        bytes_req = 7;
+    if (bytes_req > 420)
+        bytes_req = 420; /* 과도한 로그 방지 (최대 60패킷) */
+
+    /* 0) 완전 초기화: BYPASS + ODR 설정 고정 */
+    RC(fifo_set_mode(FIFO_MODE_BYPASS));
+    k_sleep(K_MSEC(2));
+    RC(wr_u8(REG_CTRL10_C, 0x00));                                                /* TIMESTAMP_EN=0 */
+    RC(wr_u8(REG_FIFO_CTRL3, 0x09));                                              /* XL only @ 3.33kHz */
+    RC(fifo_expect_ctrl5(shell, (uint8_t)(ODR_FIFO_3k33_SH | FIFO_MODE_BYPASS))); /* 기대: 0x48 */
+
+    /* 1) 워터마크 설정 (word 단위) */
+    uint16_t wtm_words = (bytes_req / 2) + 64; /* 224B -> 112 + 여유 */
+    RC(wr_u8(REG_FIFO_CTRL1, (uint8_t)(wtm_words & 0xFF)));
+    RC(wr_u8(REG_FIFO_CTRL2, (uint8_t)((wtm_words >> 8) & 0x0F)));
+
+    /* 2) STOP_ON_WTM 설정(CTRL4) */
+    RC(wr_u8(REG_FIFO_CTRL4, STOP_ON_WTM_BIT));
+
+    /* 3) FIFO 시작 (여기가 진짜 핵심) */
+    RC(fifo_set_mode(FIFO_MODE_FIFO));
+    RC(fifo_expect_ctrl5(shell, (uint8_t)(ODR_FIFO_3k33_SH | FIFO_MODE_FIFO))); /* 기대: 0x49 */
+
+    /* 3.5) 시작 직후 상태 한 번 더 읽어보기(진단) */
+    uint8_t st12[2] = {0};
+    RC(i2c_burst_read(i2c0, LSM6DSO_I2C_ADDR, REG_FIFO_STATUS1, st12, 2));
+    uint16_t diff_w = ((uint16_t)(st12[1] & 0x0F) << 8) | st12[0];
+    if (diff_w == 0)
+    {
+        uint8_t c5 = 0, c4 = 0;
+        rd_u8(REG_FIFO_CTRL5, &c5);
+        rd_u8(REG_FIFO_CTRL4, &c4);
+        shell_print(shell, "after start: CTRL5=0x%02X, CTRL4=0x%02X, DIFF=%u", c5, c4, diff_w);
+    }
+
+    /* 4) DIFF 상승 대기 */
+    for (int tries = 0; tries < 600; ++tries)
+    { /* 최대 ~600ms */
+        uint8_t st[2];
+        RC(i2c_burst_read(i2c0, LSM6DSO_I2C_ADDR, REG_FIFO_STATUS1, st, 2));
+        diff_w = ((uint16_t)(st[1] & 0x0F) << 8) | st[0];
+        if (diff_w)
+            break; /* 최소 1 word라도 쌓이면 진행 */
+        k_sleep(K_MSEC(2));
+    }
+    uint32_t bytes_avail = (uint32_t)diff_w * 2u;
+    /* 최소 7B는 읽되, 7의 배수 유지 */
+    uint16_t bytes_now = (uint16_t)MIN((uint32_t)bytes_req, bytes_avail);
+    if (bytes_now < 7u)
+        bytes_now = 7u;
+    bytes_now -= (bytes_now % 7u);
+
+    static uint8_t buf[420];
+    uint8_t reg = REG_FIFO_DATA_OUT_TAG;
+    int rc = i2c_write_read(i2c0, LSM6DSO_I2C_ADDR, &reg, 1, buf, bytes_now);
     if (rc)
     {
-        LOG_ERR("Failed to read FIFO burst: %d", rc);
-        out->wtm_reached = false;
+        shell_print(shell, "dump: i2c rc=%d", rc);
         return rc;
     }
-    out->wtm_reached = true;
-    LOG_INF("FIFO read complete. Processing stats...");
 
-    // 5. 전체 대역 (Full-Band) 시간-도메인 통계 계산
-    int16_t *axes_buf[3] = {g_ax, g_ay, g_az};
-    for (int i = 0; i < 3; i++)
+    /* 4) TAG 검출 + 오프셋 동기화 */
+    uint8_t acc_tag = detect_acc_tag(buf, bytes_now);
+    size_t off = find_sync_7B(buf, bytes_now, acc_tag);
+
+    /* 5) RAW HEX 출력 */
+    shell_print(shell, "FIFO dump: req=%uB, got=%uB, DIFF≈%uB, ACC_TAG=0x%02X, sync_off=%u",
+                (unsigned)bytes_req, (unsigned)bytes_now, (unsigned)bytes_avail,
+                acc_tag, (unsigned)off);
+    dump_hex_lines(shell, buf, bytes_now);
+
+    /* 6) 패킷 파싱(최대 32 패킷) */
+    uint16_t shown = 0;
+    for (size_t i = off; i + 7 <= bytes_now && shown < 32; i += 7)
     {
-        int16_t *raw = axes_buf[i];
-
-        // 5.1. DC 오프셋 (평균) 계산 (LSB)
-        double mean_lsb = 0.0;
-        for (int n = 0; n < VIB_N; n++)
-        {
-            mean_lsb += (double)raw[n];
-        }
-        mean_lsb /= VIB_N;
-
-        // 5.2. DC 제거된 값으로 RMS(제곱합), Peak(절대값) 계산
-        double rms_sum_sq_lsb = 0.0;
-        int32_t peak_lsb = 0; // int16_t의 절대값을 다루므로 32비트 사용
-
-        for (int n = 0; n < VIB_N; n++)
-        {
-            double val_dc_removed_lsb = (double)raw[n] - mean_lsb;
-            int32_t abs_val = (int32_t)fabs(val_dc_removed_lsb);
-
-            if (abs_val > peak_lsb)
-            {
-                peak_lsb = abs_val;
-            }
-            rms_sum_sq_lsb += (val_dc_removed_lsb * val_dc_removed_lsb);
-        }
-
-        // 5.3. RMS 및 Peak (LSB) -> (m/s^2) 변환
-        double rms_lsb = sqrt(rms_sum_sq_lsb / VIB_N);
-        float peak_ms2 = (float)peak_lsb * VIB_SA_4G;
-        float rms_ms2 = (float)rms_lsb * VIB_SA_4G;
-
-        // 5.4. (m/s^2 * 100) 고정소수점으로 변환하여 저장
-        out->peak_ms2_x100[i] = (int16_t)roundf(peak_ms2 * 100.0f);
-        out->rms_ms2_x100[i] = (int16_t)roundf(rms_ms2 * 100.0f);
+        int16_t x = (int16_t)((uint16_t)buf[i + 1] | ((uint16_t)buf[i + 2] << 8));
+        int16_t y = (int16_t)((uint16_t)buf[i + 3] | ((uint16_t)buf[i + 4] << 8));
+        int16_t z = (int16_t)((uint16_t)buf[i + 5] | ((uint16_t)buf[i + 6] << 8));
+        shell_print(shell, "[%02u] X=%6d  Y=%6d  Z=%6d  (LSB)", shown, x, y, z);
+        shown++;
     }
-    LOG_DBG("Full-band time-domain stats calculated.");
+    shell_print(shell, "parsed=%u pkt (of %uB)", shown, bytes_now);
 
-    // 6. 대역 제한 (Band-Limited) 주파수-도메인 통계 계산
-    //    (이전에 구현된 lsm6dso_process_axis 함수 재사용)
-    lsm6dso_process_axis(g_ax, 0); // X-axis
-    lsm6dso_process_axis(g_ay, 1); // Y-axis
-    lsm6dso_process_axis(g_az, 2); // Z-axis
-
-    // 6.1. g_vib_results (float mg) -> (int16_t m/s^2 * 100) 변환
-    for (int i = 0; i < 3; i++)
-    {
-        // g_vib_results.a_rms_mg[i] 는 [mg] 단위
-        // [mg] / VIB_MS2_TO_MG = [m/s^2]
-        float a_rms_ms2 = g_vib_results.a_rms_mg[i] / VIB_MS2_TO_MG;
-        float a_peak_ms2 = g_vib_results.a_peak_mg[i] / VIB_MS2_TO_MG;
-
-        // 6.2. (m/s^2 * 100) 고정소수점으로 변환하여 저장
-        out->bl_rms_ms2_x100[i] = (int16_t)roundf(a_rms_ms2 * 100.0f);
-        out->bl_peak_ms2_x100[i] = (int16_t)roundf(a_peak_ms2 * 100.0f);
-    }
-    LOG_DBG("Band-limited freq-domain stats calculated.");
-    LOG_INF("lsm6dso_capture_once complete.");
+    /* 7) 모드 복구(원하면 Continuous) */
+    /* 복구: Continuous @ 3.33kHz */
+    RC(fifo_set_mode(FIFO_MODE_CONTINUOUS));
+    RC(fifo_expect_ctrl5(shell, (uint8_t)(ODR_FIFO_3k33_SH | FIFO_MODE_CONTINUOUS))); /* 기대: 0x4E */
 
     return 0;
 }
