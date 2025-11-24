@@ -47,6 +47,10 @@ extern "C"
     /* 0.33s 동안 DRDY 폴링으로 직접 캡처 + 통계 계산 */
     int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t scale);
 
+    /* 가속도 오프셋(DC 바이어스) 보정 */
+    int set_calibration_lsm6dso(lsm6dso_scale_t scale);
+    void clear_calibration_lsm6dso(void);
+
     /* 레지스터 덤프(옵션): 쉘에서 상태 확인용 */
     struct shell;
     int lsm6dso_dump_regs(const struct shell *shell);

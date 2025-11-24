@@ -497,6 +497,46 @@ static int cmd_imu_loop(const struct shell *shell, size_t argc, char **argv)
     return 0;
 }
 
+static int cmd_imu_cal(const struct shell *shell, size_t argc, char **argv)
+{
+    if (argc < 2)
+    {
+        shell_error(shell, "usage: diag imu cal <set|clear> [4g|16g]");
+        return -EINVAL;
+    }
+
+    if (strcmp(argv[1], "clear") == 0)
+    {
+        clear_calibration_lsm6dso();
+        shell_print(shell, "imu cal: cleared");
+        return 0;
+    }
+
+    if (strcmp(argv[1], "set") == 0)
+    {
+        lsm6dso_scale_t scale = LSM6DSO_SCALE_4G;
+        if (argc >= 3)
+        {
+            if (strcmp(argv[2], "16g") == 0)
+            {
+                scale = LSM6DSO_SCALE_16G;
+            }
+            else if (strcmp(argv[2], "4g") != 0)
+            {
+                shell_error(shell, "usage: diag imu cal set [4g|16g]");
+                return -EINVAL;
+            }
+        }
+
+        int rc = set_calibration_lsm6dso(scale);
+        shell_print(shell, "imu cal set: rc=%d, scale=%s", rc, (scale == LSM6DSO_SCALE_16G) ? "16g" : "4g");
+        return rc;
+    }
+
+    shell_error(shell, "usage: diag imu cal <set|clear> [4g|16g]");
+    return -EINVAL;
+}
+
 static int cmd_imu_regs(const struct shell *shell, size_t argc, char **argv)
 {
     ARG_UNUSED(argc);
@@ -539,6 +579,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_imu,
                                SHELL_CMD(once, NULL, "Capture burst -> peak/rms [4g|16g]", cmd_imu_once),
                                SHELL_CMD(regs, NULL, "Dump key IMU/FIFO registers", cmd_imu_regs),
                                SHELL_CMD(loop, NULL, "10s, every 0.5s capture+print [4g|16g]", cmd_imu_loop),
+                               SHELL_CMD(cal, NULL, "Calibrate accel bias: cal set [4g|16g] | cal clear", cmd_imu_cal),
                                SHELL_CMD(dump, NULL, "Burst read FIFO RAW+parse [bytes=224]", cmd_imu_dump),
                                SHELL_SUBCMD_SET_END);
 

@@ -85,6 +85,7 @@ static int16_t g_az[FIFO_WTM_WORDS]; /**< Z축 가속도 LSB 데이터 버퍼 */
 
 /* FIFO RAW 버퍼: TAG+XYZ 그대로 받아두는 용도 */
 static uint8_t g_fifo_raw[FIFO_WTM_WORDS * FIFO_BYTES_PER_WORD];
+static float g_cal_offset_lsb[3] = {0.f, 0.f, 0.f}; /**< 축별 보정 오프셋(LSB) */
 
 /** @} */
 
@@ -527,13 +528,14 @@ static void band_to_bins(float fs, int nfft, float f_lo, float f_hi, int *kmin, 
  * @param lsb [in] 원시 LSB 데이터 배열
  * @param n [in] LSB 데이터 샘플 수 (최대 @ref NFFT)
  * @param lsb_to_ms2 [in] LSB-to-m/s^2 스케일 팩터
+ * @param lsb_offset [in] 사전 보정된 오프셋(LSB, 축별) — 평균 제거 전에 반영
  * @param f_lo [in] 대역 하한 (Hz)
  * @param f_hi [in] 대역 상한 (Hz)
  * @param[out] out_rms_x100 [out] 계산된 RMS 값 (m/s^2 * 100)
  * @param[out] out_peak_x100 [out] 계산된 Peak 값 (m/s^2 * 100)
  */
 static void bandlimited_rms_peak_ms2_x100(
-    const int16_t *lsb, uint16_t n, float lsb_to_ms2,
+    const int16_t *lsb, uint16_t n, float lsb_to_ms2, float lsb_offset,
     float f_lo, float f_hi, int16_t *out_rms_x100, int16_t *out_peak_x100)
 {
     /* FFT 및 윈도우용 정적 버퍼 (스택 방지) */
@@ -548,16 +550,20 @@ static void bandlimited_rms_peak_ms2_x100(
     /* NFFT보다 샘플이 많으면 NFFT개만 사용 */
     const int useN = (n < NFFT) ? n : NFFT;
 
-    /* 0) DC(평균) 제거: LSB 평균을 빼고 물리단위로 변환 */
+    /* 0) DC(평균) 제거: 보정 오프셋이 설정된 경우에는 별도 평균 제거를 건너뜀 */
+    const bool offset_active = (lsb_offset != 0.f);
     float mean_lsb = 0.f;
-    for (int i = 0; i < useN; ++i)
-        mean_lsb += lsb[i];
-    mean_lsb = (useN > 0) ? (mean_lsb / useN) : 0.f;
+    if (!offset_active)
+    {
+        for (int i = 0; i < useN; ++i)
+            mean_lsb += (float)lsb[i];
+        mean_lsb = (useN > 0) ? (mean_lsb / useN) : 0.f;
+    }
 
     /* 1) 윈도우 적용 및 제로 패딩 */
     for (int i = 0; i < useN; ++i)
     {
-        float v = ((float)lsb[i] - mean_lsb) * lsb_to_ms2; // 평균 제거 및 스케일링
+        float v = ((float)lsb[i] - lsb_offset - mean_lsb) * lsb_to_ms2; // 오프셋/평균 제거 후 스케일링
         float w = win[i];
         re[i] = v * w; /* 창을 평균 제거 후에 곱함 */
         im[i] = 0.f;
@@ -950,10 +956,10 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t scale)
                              : (axis == 1) ? g_ay
                                            : g_az;
 
-        /* DC(평균) 제거 */
+        /* DC(평균) + 저장된 오프셋 제거 */
         float mean = 0.f;
         for (uint16_t i = 0; i < n; ++i)
-            mean += src[i];
+            mean += ((float)src[i] - g_cal_offset_lsb[axis]);
         if (n > 0)
             mean /= (float)n;
 
@@ -962,7 +968,7 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t scale)
 
         for (uint16_t i = 0; i < n; ++i)
         {
-            float a = ((float)src[i] - mean) * scale; /* LSB → m/s^2 + 평균 제거 */
+            float a = ((float)src[i] - g_cal_offset_lsb[axis] - mean) * scale; /* 오프셋 및 평균 제거 후 스케일 */
             float au = (a >= 0.f) ? a : -a;
             if (au > peak)
                 peak = au;
@@ -976,7 +982,7 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t scale)
 
         /* 10–1000 Hz 대역 제한 RMS/Peak */
         bandlimited_rms_peak_ms2_x100(
-            src, n, scale,
+            src, n, scale, g_cal_offset_lsb[axis],
             10.0f, 1000.0f,
             &out->bl_rms_ms2_x100[axis],
             &out->bl_peak_ms2_x100[axis]);
@@ -1103,24 +1109,37 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale)
 
     /* 축별 평균 (DC 컴포넌트) 계산 */
     float mx = 0.f, my = 0.f, mz = 0.f;
-    for (uint16_t i = 0; i < n; ++i)
+    const bool offset_x_active = (g_cal_offset_lsb[0] != 0.f);
+    const bool offset_y_active = (g_cal_offset_lsb[1] != 0.f);
+    const bool offset_z_active = (g_cal_offset_lsb[2] != 0.f);
+
+    if (!offset_x_active)
     {
-        mx += (float)g_ax[i];
-        my += (float)g_ay[i];
-        mz += (float)g_az[i];
+        for (uint16_t i = 0; i < n; ++i)
+            mx += (float)g_ax[i];
+        mx /= (float)n;
     }
-    mx /= (float)n;
-    my /= (float)n;
-    mz /= (float)n;
+    if (!offset_y_active)
+    {
+        for (uint16_t i = 0; i < n; ++i)
+            my += (float)g_ay[i];
+        my /= (float)n;
+    }
+    if (!offset_z_active)
+    {
+        for (uint16_t i = 0; i < n; ++i)
+            mz += (float)g_az[i];
+        mz /= (float)n;
+    }
 
     float sx = 0.f, sy = 0.f, sz = 0.f;
     float px = 0.f, py = 0.f, pz = 0.f;
 
     for (uint16_t i = 0; i < n; ++i)
     {
-        float x = ((float)g_ax[i] - mx) * scale;
-        float y = ((float)g_ay[i] - my) * scale;
-        float z = ((float)g_az[i] - mz) * scale;
+        float x = ((float)g_ax[i] - g_cal_offset_lsb[0] - mx) * scale;
+        float y = ((float)g_ay[i] - g_cal_offset_lsb[1] - my) * scale;
+        float z = ((float)g_az[i] - g_cal_offset_lsb[2] - mz) * scale;
 
         float ax = fabsf(x);
         float ay = fabsf(y);
@@ -1158,7 +1177,7 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale)
                                                               : g_az;
 
         bandlimited_rms_peak_ms2_x100(
-            src, n, scale,
+            src, n, scale, g_cal_offset_lsb[axis],
             10.0f, 1000.0f,
             &out->bl_rms_ms2_x100[axis],
             &out->bl_peak_ms2_x100[axis]);
@@ -1167,6 +1186,48 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale)
     return 0;
 }
 #endif
+
+int set_calibration_lsm6dso(lsm6dso_scale_t scale)
+{
+    /* 오프셋을 초기화한 상태에서 한 번 캡처하여 DC 바이어스를 저장 */
+    g_cal_offset_lsb[0] = g_cal_offset_lsb[1] = g_cal_offset_lsb[2] = 0.f;
+
+    lsm6dso_stats_t st = {0};
+    int rc = lsm6dso_capture_once(&st, scale);
+    if (rc)
+        return rc;
+    if (st.n == 0)
+        return -EIO;
+
+    float sx = 0.f, sy = 0.f, sz = 0.f;
+    for (uint16_t i = 0; i < st.n; ++i)
+    {
+        sx += (float)g_ax[i];
+        sy += (float)g_ay[i];
+        sz += (float)g_az[i];
+    }
+
+    const float inv_n = 1.0f / (float)st.n;
+    g_cal_offset_lsb[0] = sx * inv_n;
+    g_cal_offset_lsb[1] = sy * inv_n;
+    g_cal_offset_lsb[2] = sz * inv_n;
+
+    LOG_INF("LSM6DSO calibration set: offset_lsb=(%.2f, %.2f, %.2f), n=%u, scale=%s",
+            (double)g_cal_offset_lsb[0],
+            (double)g_cal_offset_lsb[1],
+            (double)g_cal_offset_lsb[2],
+            st.n,
+            (scale == LSM6DSO_SCALE_16G) ? "16g" : "4g");
+
+    return 0;
+}
+
+void clear_calibration_lsm6dso(void)
+{
+    g_cal_offset_lsb[0] = g_cal_offset_lsb[1] = g_cal_offset_lsb[2] = 0.f;
+    LOG_INF("LSM6DSO calibration cleared");
+}
+
 /* ===== FIFO dump (diagnostic) ===== */
 
 static void dump_hex_lines(const struct shell *sh, const uint8_t *p, size_t n)
