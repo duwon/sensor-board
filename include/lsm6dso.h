@@ -30,6 +30,10 @@ extern "C"
         int16_t bl_peak_ms2_x100[3];
         int16_t bl_rms_ms2_x100[3];
 
+        /* 10–1000 Hz 속도 (주파수 적분 기반) mm/s ×100 */
+        int16_t bl_peak_mmps_x100[3];
+        int16_t bl_rms_mmps_x100[3];
+
         /* 디버그 */
         uint8_t whoami;
         bool wtm_reached;
@@ -46,6 +50,20 @@ extern "C"
 
     /* 0.33s 동안 DRDY 폴링으로 직접 캡처 + 통계 계산 */
     int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t scale);
+
+    typedef struct
+    {
+        float rms_ms2;
+        float peak_ms2;
+        float rms_mg;
+        float peak_mg;
+    } lsm6dso_psd_acc_t;
+
+    typedef struct
+    {
+        float rms_mmps;
+        float peak_mmps;
+    } lsm6dso_psd_vel_t;
 
     /* 가속도 오프셋(DC 바이어스) 보정 */
     int set_calibration_lsm6dso(lsm6dso_scale_t scale);

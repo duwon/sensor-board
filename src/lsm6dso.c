@@ -148,6 +148,14 @@ static const struct device *i2c0 = DEVICE_DT_GET(DT_NODELABEL(i2c0)); /**< I2C0 
 #define CTRL1_ODR_3k33 0xA0  /**< CTRL1_XL ODR bits for 3.33 kHz */
 #define SENS_LSB_TO_MS2_4G 0.001196f
 #define SENS_LSB_TO_MS2_16G 0.004784f
+#define PSD_N 999
+#define PSD_K_MIN 3
+#define PSD_K_MAX 300
+#define PSD_HANN_CG 0.4994994995f
+#define PSD_HANN_U 0.3746246246f
+#define G_CONST_MS2 9.80665f
+#define MMPS_X100(v_mps) ((int16_t)((v_mps * 100000.0f) + ((v_mps >= 0.f) ? 0.5f : -0.5f)))
+#define MS2_X100(v_ms2) ((int16_t)((v_ms2 * 100.0f) + ((v_ms2 >= 0.f) ? 0.5f : -0.5f)))
 
 /* REG_CTRL2_G: Gyroscope */
 #define ODR_G_POWER_DOWN (0x0 << 4) /**< 자이로스코프 파워 다운 */
@@ -612,6 +620,178 @@ static void bandlimited_rms_peak_ms2_x100(
     /* 100을 곱한 정수형으로 저장 (소수점 2자리) */
     *out_peak_x100 = (int16_t)(peak * 100.0f + 0.5f);
     *out_rms_x100 = (int16_t)(rms * 100.0f + 0.5f);
+}
+
+/* --- PSD 기반 가속도/속도 계산 (10–1000 Hz, N=999, Hann) ------------------ */
+static int compute_psd_acc_vel_axis(const int16_t *lsb, uint16_t n, float lsb_to_ms2, float offset_lsb,
+                                    int16_t *acc_rms_x100, int16_t *acc_peak_x100,
+                                    int16_t *vel_rms_mmps_x100, int16_t *vel_peak_mmps_x100)
+{
+    if (!lsb || n == 0 || !acc_rms_x100 || !acc_peak_x100 || !vel_rms_mmps_x100 || !vel_peak_mmps_x100)
+        return -EINVAL;
+
+    const uint16_t M = (n < PSD_N) ? n : PSD_N;
+    if (M < PSD_K_MIN)
+        return -EINVAL;
+
+    static float win[PSD_N];
+    static bool win_ready = false;
+    if (!win_ready)
+    {
+        make_hann(win, PSD_N);
+        win_ready = true;
+    }
+
+    static float Xre[PSD_N], Xim[PSD_N];
+    static float tmp_re[PSD_N], tmp_im[PSD_N];
+    static float timebuf[PSD_N];
+
+    /* 스케일 + 평균 제거 */
+    float mean = 0.f;
+    for (uint16_t i = 0; i < M; ++i)
+        mean += (((float)lsb[i] - offset_lsb) * lsb_to_ms2);
+    mean /= (float)M;
+
+    for (uint16_t i = 0; i < M; ++i)
+    {
+        float a = (((float)lsb[i] - offset_lsb) * lsb_to_ms2) - mean;
+        Xre[i] = a * win[i];
+        Xim[i] = 0.f;
+    }
+
+    /* DFT (N=999, 직접 계산) */
+    for (uint16_t k = 0; k < M; ++k)
+    {
+        float sum_re = 0.f, sum_im = 0.f;
+        for (uint16_t t = 0; t < M; ++t)
+        {
+            float ang = -2.0f * (float)M_PI * (float)k * (float)t / (float)M;
+            float c = cosf(ang);
+            float s = sinf(ang);
+            sum_re += Xre[t] * c - Xim[t] * s;
+            sum_im += Xre[t] * s + Xim[t] * c;
+        }
+        Xre[k] = sum_re;
+        Xim[k] = sum_im;
+    }
+
+    memcpy(tmp_re, Xre, sizeof(float) * M);
+    memcpy(tmp_im, Xim, sizeof(float) * M);
+
+    const float df = IMU_FS_HZ / (float)M;
+    const int kmax = MIN(PSD_K_MAX, (M / 2));
+
+    /* Acceleration RMS (PSD 적분) */
+    float sum_psd_a = 0.f;
+    for (int k = PSD_K_MIN; k <= kmax; ++k)
+    {
+        float mag2 = Xre[k] * Xre[k] + Xim[k] * Xim[k];
+        float psd = 2.0f * mag2 / (PSD_HANN_U * IMU_FS_HZ * (float)M);
+        sum_psd_a += psd * df;
+    }
+    float acc_rms = sqrtf(sum_psd_a);
+
+    /* Acceleration peak: 대역 외 제거 후 IFFT */
+    for (int k = 0; k < M; ++k)
+    {
+        bool keep = (k >= PSD_K_MIN && k <= kmax) || (k >= (M - kmax) && k <= (M - PSD_K_MIN));
+        if (!keep)
+        {
+            Xre[k] = 0.f;
+            Xim[k] = 0.f;
+        }
+    }
+
+    for (uint16_t t = 0; t < M; ++t)
+    {
+        float sum = 0.f;
+        for (uint16_t k = 0; k < M; ++k)
+        {
+            float ang = 2.0f * (float)M_PI * (float)k * (float)t / (float)M;
+            float c = cosf(ang);
+            float s = sinf(ang);
+            sum += Xre[k] * c - Xim[k] * s;
+        }
+        timebuf[t] = sum / (float)M;
+    }
+
+    float acc_peak = 0.f;
+    for (uint16_t i = 0; i < M; ++i)
+    {
+        float v = (timebuf[i] >= 0.f) ? timebuf[i] : -timebuf[i];
+        if (v > acc_peak)
+            acc_peak = v;
+    }
+    acc_peak /= PSD_HANN_CG;
+
+    *acc_rms_x100 = MS2_X100(acc_rms);
+    *acc_peak_x100 = MS2_X100(acc_peak);
+
+    /* Velocity spectrum from original X (tmp arrays) */
+    float sum_psd_v = 0.f;
+    for (int k = 0; k < M; ++k)
+    {
+        Xre[k] = 0.f;
+        Xim[k] = 0.f;
+    }
+
+    for (int k = PSD_K_MIN; k <= kmax; ++k)
+    {
+        float freq = (float)k * df;
+        float omega = 2.0f * (float)M_PI * freq;
+        if (omega <= 0.f)
+            continue;
+
+        float a_re = tmp_re[k];
+        float a_im = tmp_im[k];
+        float v_re = a_im / omega;  /* (a + jb)/(jω) = b/ω + j(-a/ω) */
+        float v_im = -a_re / omega;
+
+        Xre[k] = v_re;
+        Xim[k] = v_im;
+
+        /* 켤레 대칭 복원 */
+        int k_conj = M - k;
+        if (k_conj >= 0 && k_conj < M)
+        {
+            Xre[k_conj] = v_re;
+            Xim[k_conj] = -v_im;
+        }
+
+        float mag2 = v_re * v_re + v_im * v_im;
+        float psd = 2.0f * mag2 / (PSD_HANN_U * IMU_FS_HZ * (float)M);
+        sum_psd_v += psd * df;
+    }
+
+    float vel_rms = sqrtf(sum_psd_v); /* m/s */
+
+    /* Velocity peak: IFFT */
+    for (uint16_t t = 0; t < M; ++t)
+    {
+        float sum = 0.f;
+        for (uint16_t k = 0; k < M; ++k)
+        {
+            float ang = 2.0f * (float)M_PI * (float)k * (float)t / (float)M;
+            float c = cosf(ang);
+            float s = sinf(ang);
+            sum += Xre[k] * c - Xim[k] * s;
+        }
+        timebuf[t] = sum / (float)M;
+    }
+
+    float vel_peak = 0.f;
+    for (uint16_t i = 0; i < M; ++i)
+    {
+        float v = (timebuf[i] >= 0.f) ? timebuf[i] : -timebuf[i];
+        if (v > vel_peak)
+            vel_peak = v;
+    }
+    vel_peak /= PSD_HANN_CG;
+
+    *vel_rms_mmps_x100 = MMPS_X100(vel_rms);
+    *vel_peak_mmps_x100 = MMPS_X100(vel_peak);
+
+    return 0;
 }
 
 /* 가속도 TAG 값(하위 nibble) — 대부분 0x01, 일부 리비전/설정에서 0x02일 수도 있어
@@ -1176,11 +1356,13 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale)
         const int16_t *src = (axis == 0) ? g_ax : (axis == 1) ? g_ay
                                                               : g_az;
 
-        bandlimited_rms_peak_ms2_x100(
-            src, n, scale, g_cal_offset_lsb[axis],
-            10.0f, 1000.0f,
+        /* 10–1000 Hz PSD 기반 가속도/속도 계산 */
+        compute_psd_acc_vel_axis(
+            src, n, lsb_to_ms2, g_cal_offset_lsb[axis],
             &out->bl_rms_ms2_x100[axis],
-            &out->bl_peak_ms2_x100[axis]);
+            &out->bl_peak_ms2_x100[axis],
+            &out->bl_rms_mmps_x100[axis],
+            &out->bl_peak_mmps_x100[axis]);
     }
 
     return 0;
