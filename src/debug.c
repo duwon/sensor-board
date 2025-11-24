@@ -388,11 +388,28 @@ static int cmd_imu_init(const struct shell *shell, size_t argc, char **argv)
 
 static int cmd_imu_once(const struct shell *shell, size_t argc, char **argv)
 {
-    ARG_UNUSED(argc);
-    ARG_UNUSED(argv);
+    lsm6dso_scale_t scale = LSM6DSO_SCALE_4G;
+    if (argc >= 2)
+    {
+        if (strcmp(argv[1], "16g") == 0)
+        {
+            scale = LSM6DSO_SCALE_16G;
+        }
+        else if (strcmp(argv[1], "4g") == 0)
+        {
+            scale = LSM6DSO_SCALE_4G;
+        }
+        else
+        {
+            shell_error(shell, "usage: diag imu once [4g|16g]");
+            return -EINVAL;
+        }
+    }
+
+    const char *scale_str = (scale == LSM6DSO_SCALE_16G) ? "16g" : "4g";
     lsm6dso_stats_t st = {0};
-    int rc = lsm6dso_capture_once(&st);
-    shell_print(shell, "rc=%d, n=%u, WHO=0x%02X, WTM=%d", rc, st.n, st.whoami, st.wtm_reached);
+    int rc = lsm6dso_capture_once(&st, scale);
+    shell_print(shell, "rc=%d, n=%u, WHO=0x%02X, WTM=%d, scale=%s", rc, st.n, st.whoami, st.wtm_reached, scale_str);
 
     if (st.n > 0)
     {
@@ -410,8 +427,21 @@ static int cmd_imu_once(const struct shell *shell, size_t argc, char **argv)
 
 static int cmd_imu_loop(const struct shell *shell, size_t argc, char **argv)
 {
-    ARG_UNUSED(argc);
-    ARG_UNUSED(argv);
+    lsm6dso_scale_t scale = LSM6DSO_SCALE_4G;
+    if (argc >= 2)
+    {
+        if (strcmp(argv[1], "16g") == 0)
+        {
+            scale = LSM6DSO_SCALE_16G;
+        }
+        else if (strcmp(argv[1], "4g") != 0)
+        {
+            shell_error(shell, "usage: diag imu loop [4g|16g]");
+            return -EINVAL;
+        }
+    }
+
+    const char *scale_str = (scale == LSM6DSO_SCALE_16G) ? "16g" : "4g";
 
     const uint32_t duration_ms = 10 * 1000; /* 총 10초 */
     const uint32_t interval_ms = 500;       /* 0.5초 간격 */
@@ -428,7 +458,7 @@ static int cmd_imu_loop(const struct shell *shell, size_t argc, char **argv)
         lsm6dso_stats_t st = {0};
 
         uint32_t t_call0 = k_uptime_get_32();
-        int rc = lsm6dso_capture_once(&st);
+        int rc = lsm6dso_capture_once(&st, scale);
         uint32_t t_call1 = k_uptime_get_32();
 
         uint32_t capture_ms = t_call1 - t_call0;
@@ -437,8 +467,8 @@ static int cmd_imu_loop(const struct shell *shell, size_t argc, char **argv)
         shell_print(shell, "\nloop: interval_before=%ums, capture_ms=%ums",
                     (unsigned)interval_before_ms, (unsigned)capture_ms);
 
-        shell_print(shell, "rc=%d, n=%u, WHO=0x%02X, WTM=%d",
-                    rc, st.n, st.whoami, st.wtm_reached);
+        shell_print(shell, "rc=%d, n=%u, WHO=0x%02X, WTM=%d, scale=%s",
+                    rc, st.n, st.whoami, st.wtm_reached, scale_str);
 
         if (st.n > 0)
         {
@@ -506,9 +536,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_imu,
                                SHELL_CMD(who, NULL, "LSM6DSO WHO_AM_I check", cmd_imu_who),
                                SHELL_CMD(test, NULL, "LSM6DSO Test start", cmd_imu_test),
                                SHELL_CMD(init, NULL, "LSM6DSO init (ODR=3.33k, FS=±4g)", cmd_imu_init),
-                               SHELL_CMD(once, NULL, "Capture burst -> peak/rms", cmd_imu_once),
+                               SHELL_CMD(once, NULL, "Capture burst -> peak/rms [4g|16g]", cmd_imu_once),
                                SHELL_CMD(regs, NULL, "Dump key IMU/FIFO registers", cmd_imu_regs),
-                               SHELL_CMD(loop, NULL, "10s, every 0.5s capture+print", cmd_imu_loop),
+                               SHELL_CMD(loop, NULL, "10s, every 0.5s capture+print [4g|16g]", cmd_imu_loop),
                                SHELL_CMD(dump, NULL, "Burst read FIFO RAW+parse [bytes=224]", cmd_imu_dump),
                                SHELL_SUBCMD_SET_END);
 

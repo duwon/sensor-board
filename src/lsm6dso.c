@@ -144,6 +144,9 @@ static const struct device *i2c0 = DEVICE_DT_GET(DT_NODELABEL(i2c0)); /**< I2C0 
 #define ODR_FIFO_3k33_SH ((uint8_t)(0x09 << 3))
 #define FS_XL_4G (0x2 << 2)  /**< 가속도 Full-Scale: ±4g (10b) */
 #define FS_XL_16G (0x1 << 2) /**< 가속도 Full-Scale: ±16g (01b) */
+#define CTRL1_ODR_3k33 0xA0  /**< CTRL1_XL ODR bits for 3.33 kHz */
+#define SENS_LSB_TO_MS2_4G 0.001196f
+#define SENS_LSB_TO_MS2_16G 0.004784f
 
 /* REG_CTRL2_G: Gyroscope */
 #define ODR_G_POWER_DOWN (0x0 << 4) /**< 자이로스코프 파워 다운 */
@@ -300,15 +303,15 @@ int lsm6dso_dump_regs(const struct shell *shell)
  * - I3C 인터페이스 비활성화
  * - 자이로스코프 파워 다운 (가속도계만 사용)
  * - FIFO 모드 설정 (Bypass -> Continuous)
- * - 가속도계 ODR: 3.33 kHz (0x9), FS: ±4g (fs 파라미터 무시, ±4g 고정)
+ * - 가속도계 ODR: 3.33 kHz (0x9), 기본 FS: ±4g
  * - FIFO BDR: 3.33 kHz (0x9) (가속도계만)
  * - FIFO Watermark: @ref FIFO_WTM_WORDS (999)
  *
  * @note
  * 이 함수는 센서의 *파라미터* (ODR, FS)를 설정합니다.
- * 하지만 @ref lsm6dso_capture_once 함수는 이 함수가 설정한 FIFO 모드(Continuous) 대신, 내부적으로 FIFO를 BYPASS 모드로 직접 전환하여 DRDY 폴링을 수행합니다. 또한, `fs` 파라미터가 주어지지만 실제로는 `FS_XL_4G`로 고정되어 설정됩니다.
+ * 하지만 @ref lsm6dso_capture_once 함수는 캡처 시 FIFO 모드를 BYPASS로 전환하고,
+ * 호출 시 scale 파라미터(±4g/±16g)에 맞춰 FS를 다시 설정합니다.
  *
- * @param fs 사용할 Full-Scale (현재 구현에서는 무시되고 ±4g로 고정됨)
  * @return 0 on success, 음수 에러 코드 on failure.
  */
 int lsm6dso_init()
@@ -734,16 +737,21 @@ static void lsm6dso_debug_one_sample(const char *tag)
  * 6. 모든 결과를 lsm6dso_stats_t 구조체에 채웁니다.
  *
  * @param[out] out 통계 결과를 저장할 lsm6dso_stats_t 구조체 포인터
+ * @param scale 캡처 시 사용할 가속도 풀스케일(LSM6DSO_SCALE_4G 또는 LSM6DSO_SCALE_16G)
  * @return 0 on success (최소 1개 샘플 수집), -EINVAL if out is NULL,
  * -EIO if no samples collected, or I2C 에러 코드.
  */
 
- #if 1
-int lsm6dso_capture_once(lsm6dso_stats_t *out)
+#if 0
+int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t scale)
 {
     if (!out)
         return -EINVAL;
     memset(out, 0, sizeof(*out));
+
+    const bool use_16g = (scale == LSM6DSO_SCALE_16G);
+    const uint8_t fs_bits = use_16g ? FS_XL_16G : FS_XL_4G;
+    const float lsb_to_ms2 = use_16g ? SENS_LSB_TO_MS2_16G : SENS_LSB_TO_MS2_4G;
 
     /* ------------------------------
      * Stage -1: 현재 레지스터 상태 확인
@@ -756,7 +764,7 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out)
      * ------------------------------ */
     /* 3.33 kHz, ±4g 로 다시 한 번 명시적으로 세팅
        (값은 기존에 쓰시던 값으로 맞춰도 됩니다. 예전엔 0xA8 코멘트, 지금은 0x98 사용 중이었음) */
-    RC(wr_u8(REG_CTRL1_XL, 0xA8)); /* ODR_XL=3.33k, FS=±4g */
+    RC(wr_u8(REG_CTRL1_XL, (uint8_t)(CTRL1_ODR_3k33 | fs_bits))); /* ODR_XL=3.33k, FS=±4g/±16g */
 
     /* FIFO 배치 속도: XL만 3.333 kHz로 FIFO에 기록, Gyro는 0 */
     RC(wr_u8(REG_FIFO_CTRL3, 0x09)); /* BDR_GY=0000, BDR_XL=1001(3.333 kHz) */
@@ -789,7 +797,7 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out)
     LOG_INF("FIFOcap[2] STOP_ON_WTM=1 설정");
 
     /* ------------------------------
-     * Stage 2: FIFO 모드 진입 
+     * Stage 2: FIFO 모드 진입
      * ------------------------------ */
     RC(fifo_set_mode(FIFO_MODE_FIFO));
     RC(fifo_expect_ctrl5(NULL, (uint8_t)(ODR_FIFO_3k33_SH | FIFO_MODE_FIFO)));
@@ -843,7 +851,7 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out)
         /* 2) DIFF_FIFO가 0이어도 FIFO_DATA_OUT_TAG에서 뭔가 나오는지 확인 */
         uint8_t fifo_dbg[21] = {0}; /* TAG+XYZ 3세트(3*7) */
         uint8_t reg = REG_FIFO_DATA_OUT_TAG;
-        int rc_dbg = i2c_write_read(i2c0, LSM6DSO_I2C_ADDR,                                    &reg, 1,                                    fifo_dbg, sizeof(fifo_dbg));
+        int rc_dbg = i2c_write_read(i2c0, LSM6DSO_I2C_ADDR, &reg, 1, fifo_dbg, sizeof(fifo_dbg));
         if (rc_dbg)
         {
             LOG_ERR("FIFOcap[DBG_FIFO] i2c_write_read rc=%d", rc_dbg);
@@ -934,7 +942,7 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out)
     /* ------------------------------
      * Stage 6: 전체대역 RMS/Peak + 10–1000Hz 대역 RMS/Peak 계산
      * ------------------------------ */
-    const float scale = 0.001196f;
+    const float scale = lsb_to_ms2;
 
     for (int axis = 0; axis < 3; ++axis)
     {
@@ -987,11 +995,15 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out)
 }
 
 #else
-int lsm6dso_capture_once(lsm6dso_stats_t *out)
+int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale)
 {
     if (!out)
         return -EINVAL;
     memset(out, 0, sizeof(*out));
+
+    const bool use_16g = (lsm6dso_scale == LSM6DSO_SCALE_16G);
+    const uint8_t fs_bits = use_16g ? FS_XL_16G : FS_XL_4G;
+    const float lsb_to_ms2 = use_16g ? SENS_LSB_TO_MS2_16G : SENS_LSB_TO_MS2_4G;
 
     /* -------------------------------------------------
      * 0) 가속도 설정 재확인 + FIFO 완전 비활성화
@@ -1002,8 +1014,8 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out)
     /* I3C 비활성화 (필요 시) */
     RC(wr_u8(REG_CTRL9_XL, CTRL9_XL_I3C_DISABLE));
 
-    /* 가속도: ODR=3.33kHz, FS=±4g (0xA8) */
-    RC(wr_u8(REG_CTRL1_XL, 0xA8));
+    /* 가속도: ODR=3.33kHz, FS=±4g/±16g (CTRL1_ODR_3k33 | FS bits) */
+    RC(wr_u8(REG_CTRL1_XL, (uint8_t)(CTRL1_ODR_3k33 | fs_bits)));
 
     /* FIFO 관련 레지스터 클리어 (배치/모드/WTM 모두 OFF) */
     RC(wr_u8(REG_FIFO_CTRL1, 0x00));
@@ -1026,8 +1038,8 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out)
     uint8_t raw[6]; /* X/Y/Z (L/H) */
 
     uint32_t t_start = k_uptime_get_32();
-    const uint32_t CAPTURE_TIMEOUT_MS = 1000;   /* 1초 타임아웃 (0.3s면 충분히 끝나야 함) */
-    const uint32_t POLL_INTERVAL_US   = 50;     /* DRDY 폴링 간격 (50us) */
+    const uint32_t CAPTURE_TIMEOUT_MS = 1000; /* 1초 타임아웃 (0.3s면 충분히 끝나야 함) */
+    const uint32_t POLL_INTERVAL_US = 50;     /* DRDY 폴링 간격 (50us) */
 
     LOG_INF("DRDYcap: start capture, TARGET_N=%u", TARGET_N);
 
@@ -1087,7 +1099,7 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out)
     /* -------------------------------------------------
      * 2) DC 제거 + 전체 대역 RMS/Peak 계산
      * ------------------------------------------------- */
-    const float scale = 0.001196f;
+    const float scale = lsb_to_ms2;
 
     /* 축별 평균 (DC 컴포넌트) 계산 */
     float mx = 0.f, my = 0.f, mz = 0.f;
@@ -1114,9 +1126,12 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out)
         float ay = fabsf(y);
         float az = fabsf(z);
 
-        if (ax > px) px = ax;
-        if (ay > py) py = ay;
-        if (az > pz) pz = az;
+        if (ax > px)
+            px = ax;
+        if (ay > py)
+            py = ay;
+        if (az > pz)
+            pz = az;
 
         sx += x * x;
         sy += y * y;
@@ -1130,17 +1145,17 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out)
     out->peak_ms2_x100[0] = (int16_t)(px * 100.f + 0.5f);
     out->peak_ms2_x100[1] = (int16_t)(py * 100.f + 0.5f);
     out->peak_ms2_x100[2] = (int16_t)(pz * 100.f + 0.5f);
-    out->rms_ms2_x100[0]  = (int16_t)(rx * 100.f + 0.5f);
-    out->rms_ms2_x100[1]  = (int16_t)(ry * 100.f + 0.5f);
-    out->rms_ms2_x100[2]  = (int16_t)(rz * 100.f + 0.5f);
+    out->rms_ms2_x100[0] = (int16_t)(rx * 100.f + 0.5f);
+    out->rms_ms2_x100[1] = (int16_t)(ry * 100.f + 0.5f);
+    out->rms_ms2_x100[2] = (int16_t)(rz * 100.f + 0.5f);
 
     /* -------------------------------------------------
      * 3) 10–1000 Hz 대역 제한 RMS/Peak (기존 PSD/필터 함수 활용)
      * ------------------------------------------------- */
     for (int axis = 0; axis < 3; ++axis)
     {
-        const int16_t *src = (axis == 0) ? g_ax :
-                             (axis == 1) ? g_ay : g_az;
+        const int16_t *src = (axis == 0) ? g_ax : (axis == 1) ? g_ay
+                                                              : g_az;
 
         bandlimited_rms_peak_ms2_x100(
             src, n, scale,

@@ -35,11 +35,17 @@ extern "C"
         bool wtm_reached;
     } lsm6dso_stats_t;
 
+    typedef enum
+    {
+        LSM6DSO_SCALE_4G = 4,
+        LSM6DSO_SCALE_16G = 16,
+    } lsm6dso_scale_t;
+
     /* 초기화(ODR=3.33kHz, FS=±4g, Gyro OFF, FIFO=Continuous로 세팅) */
     int lsm6dso_init(void);
 
     /* 0.33s 동안 DRDY 폴링으로 직접 캡처 + 통계 계산 */
-    int lsm6dso_capture_once(lsm6dso_stats_t *out);
+    int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t scale);
 
     /* 레지스터 덤프(옵션): 쉘에서 상태 확인용 */
     struct shell;
