@@ -389,6 +389,7 @@ static int cmd_imu_init(const struct shell *shell, size_t argc, char **argv)
 static int cmd_imu_once(const struct shell *shell, size_t argc, char **argv)
 {
     lsm6dso_scale_t scale = LSM6DSO_SCALE_4G;
+    bool acc_only = false, vel_only = false;
     if (argc >= 2)
     {
         if (strcmp(argv[1], "16g") == 0)
@@ -399,17 +400,48 @@ static int cmd_imu_once(const struct shell *shell, size_t argc, char **argv)
         {
             scale = LSM6DSO_SCALE_4G;
         }
+        else if (strcmp(argv[1], "acc") == 0)
+        {
+            acc_only = true;
+        }
+        else if (strcmp(argv[1], "vel") == 0)
+        {
+            vel_only = true;
+        }
         else
         {
-            shell_error(shell, "usage: diag imu once [4g|16g]");
+            shell_error(shell, "usage: diag imu once [4g|16g|acc|vel] [4g|16g]");
+            return -EINVAL;
+        }
+    }
+
+    if ((acc_only || vel_only) && argc >= 3)
+    {
+        if (strcmp(argv[2], "16g") == 0)
+            scale = LSM6DSO_SCALE_16G;
+        else if (strcmp(argv[2], "4g") == 0)
+            scale = LSM6DSO_SCALE_4G;
+        else
+        {
+            shell_error(shell, "usage: diag imu once [acc|vel] [4g|16g]");
             return -EINVAL;
         }
     }
 
     const char *scale_str = (scale == LSM6DSO_SCALE_16G) ? "16g" : "4g";
     lsm6dso_stats_t st = {0};
-    int rc = lsm6dso_capture_once(&st, scale);
-    shell_print(shell, "rc=%d, n=%u, WHO=0x%02X, WTM=%d, scale=%s", rc, st.n, st.whoami, st.wtm_reached, scale_str);
+    int rc = 0;
+    if (acc_only)
+        rc = lsm6dso_capture_acc_only(&st, scale);
+    else if (vel_only)
+        rc = lsm6dso_capture_vel_only(&st, scale);
+    else
+        rc = lsm6dso_capture_once(&st, scale);
+
+    shell_print(shell, "rc=%d, n=%u, WHO=0x%02X, WTM=%d, mode=%s, scale=%s",
+                rc, st.n, st.whoami, st.wtm_reached,
+                acc_only ? "acc" : vel_only ? "vel" : "both",
+                scale_str);
 
     if (st.n > 0)
     {
@@ -417,10 +449,20 @@ static int cmd_imu_once(const struct shell *shell, size_t argc, char **argv)
                     st.peak_ms2_x100[0], st.peak_ms2_x100[1], st.peak_ms2_x100[2]);
         shell_print(shell, "ALL  RMS  (x,y,z) = (%d,%d,%d) x0.01 m/s^2",
                     st.rms_ms2_x100[0], st.rms_ms2_x100[1], st.rms_ms2_x100[2]);
-        shell_print(shell, "10-1000Hz PEAK(x,y,z) = (%d,%d,%d) x0.01 m/s^2",
-                    st.bl_peak_ms2_x100[0], st.bl_peak_ms2_x100[1], st.bl_peak_ms2_x100[2]);
-        shell_print(shell, "10-1000Hz RMS (x,y,z) = (%d,%d,%d) x0.01 m/s^2",
-                    st.bl_rms_ms2_x100[0], st.bl_rms_ms2_x100[1], st.bl_rms_ms2_x100[2]);
+        if (!vel_only)
+        {
+            shell_print(shell, "10-1000Hz PEAK(x,y,z) = (%d,%d,%d) x0.01 m/s^2",
+                        st.bl_peak_ms2_x100[0], st.bl_peak_ms2_x100[1], st.bl_peak_ms2_x100[2]);
+            shell_print(shell, "10-1000Hz RMS (x,y,z) = (%d,%d,%d) x0.01 m/s^2",
+                        st.bl_rms_ms2_x100[0], st.bl_rms_ms2_x100[1], st.bl_rms_ms2_x100[2]);
+        }
+        if (!acc_only)
+        {
+            shell_print(shell, "10-1000Hz PEAK vel (x,y,z) = (%d,%d,%d) x0.01 mm/s",
+                        st.bl_peak_mmps_x100[0], st.bl_peak_mmps_x100[1], st.bl_peak_mmps_x100[2]);
+            shell_print(shell, "10-1000Hz RMS  vel (x,y,z) = (%d,%d,%d) x0.01 mm/s",
+                        st.bl_rms_mmps_x100[0], st.bl_rms_mmps_x100[1], st.bl_rms_mmps_x100[2]);
+        }
     }
     return rc;
 }
@@ -576,7 +618,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_imu,
                                SHELL_CMD(who, NULL, "LSM6DSO WHO_AM_I check", cmd_imu_who),
                                SHELL_CMD(test, NULL, "LSM6DSO Test start", cmd_imu_test),
                                SHELL_CMD(init, NULL, "LSM6DSO init (ODR=3.33k, FS=±4g)", cmd_imu_init),
-                               SHELL_CMD(once, NULL, "Capture burst -> peak/rms [4g|16g]", cmd_imu_once),
+                               SHELL_CMD(once, NULL, "Capture burst -> peak/rms [4g|16g|acc|vel]", cmd_imu_once),
                                SHELL_CMD(regs, NULL, "Dump key IMU/FIFO registers", cmd_imu_regs),
                                SHELL_CMD(loop, NULL, "10s, every 0.5s capture+print [4g|16g]", cmd_imu_loop),
                                SHELL_CMD(cal, NULL, "Calibrate accel bias: cal set [4g|16g] | cal clear", cmd_imu_cal),

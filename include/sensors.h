@@ -1,6 +1,7 @@
 #pragma once
 #include <zephyr/kernel.h>
 #include <stdint.h>
+#include "lsm6dso.h"
 
 /* ------------------------------------------------------
  * Sensor ID Definitions (파트명 → 숫자 치환)
@@ -45,6 +46,9 @@ typedef struct
     int16_t acc_rms_x100[3];    /**< 가속도 RMS * 100 (선택적) */
     int16_t acc_peak_x100[3];   /**< 가속도 Peak * 100 (선택적) */
 } sensor_sample_t;
+
+/* IMU 통계 전역 공유 변수 */
+extern lsm6dso_stats_t g_lsm6dso_stats;
 
 /** @file sensors.h
  * @brief 센서 인터페이스 정의 파일

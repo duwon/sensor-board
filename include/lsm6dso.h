@@ -50,6 +50,8 @@ extern "C"
 
     /* 0.33s 동안 DRDY 폴링으로 직접 캡처 + 통계 계산 */
     int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t scale);
+    int lsm6dso_capture_acc_only(lsm6dso_stats_t *out, lsm6dso_scale_t scale); /* 저전력: 가속도만 */
+    int lsm6dso_capture_vel_only(lsm6dso_stats_t *out, lsm6dso_scale_t scale); /* 저전력: 속도만 */
 
     typedef struct
     {

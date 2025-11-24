@@ -86,6 +86,8 @@ static int16_t g_az[FIFO_WTM_WORDS]; /**< Z축 가속도 LSB 데이터 버퍼 */
 /* FIFO RAW 버퍼: TAG+XYZ 그대로 받아두는 용도 */
 static uint8_t g_fifo_raw[FIFO_WTM_WORDS * FIFO_BYTES_PER_WORD];
 static float g_cal_offset_lsb[3] = {0.f, 0.f, 0.f}; /**< 축별 보정 오프셋(LSB) */
+static bool g_calc_acc = true;
+static bool g_calc_vel = true;
 
 /** @} */
 
@@ -642,9 +644,7 @@ static int compute_psd_acc_vel_axis(const int16_t *lsb, uint16_t n, float lsb_to
         win_ready = true;
     }
 
-    static float Xre[PSD_N], Xim[PSD_N];
-    static float tmp_re[PSD_N], tmp_im[PSD_N];
-    static float timebuf[PSD_N];
+    static float re[NFFT], im[NFFT], vre[NFFT], vim[NFFT];
 
     /* 스케일 + 평균 제거 */
     float mean = 0.f;
@@ -655,141 +655,130 @@ static int compute_psd_acc_vel_axis(const int16_t *lsb, uint16_t n, float lsb_to
     for (uint16_t i = 0; i < M; ++i)
     {
         float a = (((float)lsb[i] - offset_lsb) * lsb_to_ms2) - mean;
-        Xre[i] = a * win[i];
-        Xim[i] = 0.f;
+        re[i] = a * win[i];
+        im[i] = 0.f;
     }
-
-    /* DFT (N=999, 직접 계산) */
-    for (uint16_t k = 0; k < M; ++k)
+    for (uint16_t i = M; i < NFFT; ++i)
     {
-        float sum_re = 0.f, sum_im = 0.f;
-        for (uint16_t t = 0; t < M; ++t)
-        {
-            float ang = -2.0f * (float)M_PI * (float)k * (float)t / (float)M;
-            float c = cosf(ang);
-            float s = sinf(ang);
-            sum_re += Xre[t] * c - Xim[t] * s;
-            sum_im += Xre[t] * s + Xim[t] * c;
-        }
-        Xre[k] = sum_re;
-        Xim[k] = sum_im;
+        re[i] = 0.f;
+        im[i] = 0.f;
     }
 
-    memcpy(tmp_re, Xre, sizeof(float) * M);
-    memcpy(tmp_im, Xim, sizeof(float) * M);
+    /* FFT (1024pt, zero-padding) */
+    fft_radix2(re, im, 0);
 
-    const float df = IMU_FS_HZ / (float)M;
-    const int kmax = MIN(PSD_K_MAX, (M / 2));
+    /* 원본 스펙트럼 복사 (속도 계산용) */
+    memcpy(vre, re, sizeof(float) * NFFT);
+    memcpy(vim, im, sizeof(float) * NFFT);
+
+    const float df = IMU_FS_HZ / (float)PSD_N; /* 요구 스펙: 3.333... Hz */
+    const int kmax = MIN(PSD_K_MAX, (NFFT / 2) - 1);
 
     /* Acceleration RMS (PSD 적분) */
-    float sum_psd_a = 0.f;
-    for (int k = PSD_K_MIN; k <= kmax; ++k)
-    {
-        float mag2 = Xre[k] * Xre[k] + Xim[k] * Xim[k];
-        float psd = 2.0f * mag2 / (PSD_HANN_U * IMU_FS_HZ * (float)M);
-        sum_psd_a += psd * df;
-    }
-    float acc_rms = sqrtf(sum_psd_a);
-
-    /* Acceleration peak: 대역 외 제거 후 IFFT */
-    for (int k = 0; k < M; ++k)
-    {
-        bool keep = (k >= PSD_K_MIN && k <= kmax) || (k >= (M - kmax) && k <= (M - PSD_K_MIN));
-        if (!keep)
-        {
-            Xre[k] = 0.f;
-            Xim[k] = 0.f;
-        }
-    }
-
-    for (uint16_t t = 0; t < M; ++t)
-    {
-        float sum = 0.f;
-        for (uint16_t k = 0; k < M; ++k)
-        {
-            float ang = 2.0f * (float)M_PI * (float)k * (float)t / (float)M;
-            float c = cosf(ang);
-            float s = sinf(ang);
-            sum += Xre[k] * c - Xim[k] * s;
-        }
-        timebuf[t] = sum / (float)M;
-    }
-
+    float acc_rms = 0.f;
     float acc_peak = 0.f;
-    for (uint16_t i = 0; i < M; ++i)
-    {
-        float v = (timebuf[i] >= 0.f) ? timebuf[i] : -timebuf[i];
-        if (v > acc_peak)
-            acc_peak = v;
-    }
-    acc_peak /= PSD_HANN_CG;
 
-    *acc_rms_x100 = MS2_X100(acc_rms);
-    *acc_peak_x100 = MS2_X100(acc_peak);
+    if (g_calc_acc)
+    {
+        float sum_psd_a = 0.f;
+        for (int k = PSD_K_MIN; k <= kmax; ++k)
+        {
+            float mag2 = re[k] * re[k] + im[k] * im[k];
+            float psd = 2.0f * mag2 / (PSD_HANN_U * IMU_FS_HZ * (float)PSD_N);
+            sum_psd_a += psd * df;
+        }
+        acc_rms = sqrtf(sum_psd_a);
+
+        /* Acceleration peak: 대역 외 제거 후 IFFT */
+        for (int k = 0; k <= NFFT / 2; ++k)
+        {
+            bool keep = (k >= PSD_K_MIN && k <= kmax);
+            if (!keep)
+            {
+                re[k] = 0.f;
+                im[k] = 0.f;
+                if (k > 0 && k < NFFT / 2)
+                {
+                    re[NFFT - k] = 0.f;
+                    im[NFFT - k] = 0.f;
+                }
+            }
+        }
+
+        fft_radix2(re, im, 1);
+
+        for (uint16_t i = 0; i < M; ++i)
+        {
+            float v = (re[i] >= 0.f) ? re[i] : -re[i];
+            if (v > acc_peak)
+                acc_peak = v;
+        }
+        acc_peak /= PSD_HANN_CG;
+    }
+
+    *acc_rms_x100 = g_calc_acc ? MS2_X100(acc_rms) : 0;
+    *acc_peak_x100 = g_calc_acc ? MS2_X100(acc_peak) : 0;
 
     /* Velocity spectrum from original X (tmp arrays) */
-    float sum_psd_v = 0.f;
-    for (int k = 0; k < M; ++k)
+    if (g_calc_vel)
     {
-        Xre[k] = 0.f;
-        Xim[k] = 0.f;
-    }
-
-    for (int k = PSD_K_MIN; k <= kmax; ++k)
-    {
-        float freq = (float)k * df;
-        float omega = 2.0f * (float)M_PI * freq;
-        if (omega <= 0.f)
-            continue;
-
-        float a_re = tmp_re[k];
-        float a_im = tmp_im[k];
-        float v_re = a_im / omega;  /* (a + jb)/(jω) = b/ω + j(-a/ω) */
-        float v_im = -a_re / omega;
-
-        Xre[k] = v_re;
-        Xim[k] = v_im;
-
-        /* 켤레 대칭 복원 */
-        int k_conj = M - k;
-        if (k_conj >= 0 && k_conj < M)
+        float sum_psd_v = 0.f;
+        for (int k = 0; k < NFFT; ++k)
         {
-            Xre[k_conj] = v_re;
-            Xim[k_conj] = -v_im;
+            re[k] = 0.f;
+            im[k] = 0.f;
         }
 
-        float mag2 = v_re * v_re + v_im * v_im;
-        float psd = 2.0f * mag2 / (PSD_HANN_U * IMU_FS_HZ * (float)M);
-        sum_psd_v += psd * df;
-    }
-
-    float vel_rms = sqrtf(sum_psd_v); /* m/s */
-
-    /* Velocity peak: IFFT */
-    for (uint16_t t = 0; t < M; ++t)
-    {
-        float sum = 0.f;
-        for (uint16_t k = 0; k < M; ++k)
+        for (int k = PSD_K_MIN; k <= kmax; ++k)
         {
-            float ang = 2.0f * (float)M_PI * (float)k * (float)t / (float)M;
-            float c = cosf(ang);
-            float s = sinf(ang);
-            sum += Xre[k] * c - Xim[k] * s;
+            float freq = (float)k * df;
+            float omega = 2.0f * (float)M_PI * freq;
+            if (omega <= 0.f)
+                continue;
+
+            float a_re = vre[k];
+            float a_im = vim[k];
+            float v_re = a_im / omega; /* (a + jb)/(jω) = b/ω + j(-a/ω) */
+            float v_im = -a_re / omega;
+
+            re[k] = v_re;
+            im[k] = v_im;
+
+            /* 켤레 대칭 복원 */
+            int k_conj = M - k;
+            if (k_conj >= 0 && k_conj < M)
+            {
+                re[k_conj] = v_re;
+                im[k_conj] = -v_im;
+            }
+
+            float mag2 = v_re * v_re + v_im * v_im;
+            float psd = 2.0f * mag2 / (PSD_HANN_U * IMU_FS_HZ * (float)PSD_N);
+            sum_psd_v += psd * df;
         }
-        timebuf[t] = sum / (float)M;
-    }
 
-    float vel_peak = 0.f;
-    for (uint16_t i = 0; i < M; ++i)
+        float vel_rms = sqrtf(sum_psd_v); /* m/s */
+
+        /* Velocity peak: IFFT */
+        fft_radix2(re, im, 1);
+
+        float vel_peak = 0.f;
+        for (uint16_t i = 0; i < M; ++i)
+        {
+            float v = (re[i] >= 0.f) ? re[i] : -re[i];
+            if (v > vel_peak)
+                vel_peak = v;
+        }
+        vel_peak /= PSD_HANN_CG;
+
+        *vel_rms_mmps_x100 = MMPS_X100(vel_rms);
+        *vel_peak_mmps_x100 = MMPS_X100(vel_peak);
+    }
+    else
     {
-        float v = (timebuf[i] >= 0.f) ? timebuf[i] : -timebuf[i];
-        if (v > vel_peak)
-            vel_peak = v;
+        *vel_rms_mmps_x100 = 0;
+        *vel_peak_mmps_x100 = 0;
     }
-    vel_peak /= PSD_HANN_CG;
-
-    *vel_rms_mmps_x100 = MMPS_X100(vel_rms);
-    *vel_peak_mmps_x100 = MMPS_X100(vel_peak);
 
     return 0;
 }
@@ -1217,9 +1206,9 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale)
         out->whoami = who;
 
     /* -------------------------------------------------
-     * 1) DRDY 폴링으로 N=999 샘플 캡처
+     * 1) DRDY 폴링으로 N=FIFO_WTM_WORDS 샘플 캡처
      * ------------------------------------------------- */
-    const uint16_t TARGET_N = 999;
+    const uint16_t TARGET_N = FIFO_WTM_WORDS;
     uint16_t n = 0;
     uint8_t raw[6]; /* X/Y/Z (L/H) */
 
@@ -1368,6 +1357,24 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale)
     return 0;
 }
 #endif
+
+int lsm6dso_capture_acc_only(lsm6dso_stats_t *out, lsm6dso_scale_t scale)
+{
+    g_calc_acc = true;
+    g_calc_vel = false;
+    int rc = lsm6dso_capture_once(out, scale);
+    g_calc_vel = true; /* restore default */
+    return rc;
+}
+
+int lsm6dso_capture_vel_only(lsm6dso_stats_t *out, lsm6dso_scale_t scale)
+{
+    g_calc_acc = false;
+    g_calc_vel = true;
+    int rc = lsm6dso_capture_once(out, scale);
+    g_calc_acc = true; /* restore default */
+    return rc;
+}
 
 int set_calibration_lsm6dso(lsm6dso_scale_t scale)
 {
