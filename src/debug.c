@@ -22,6 +22,8 @@
 #include "ssc_pressure.h"
 #include "ntc.h"
 
+/* sensors.c 에서 갱신하는 글로벌 IMU 통계 사용 */
+extern lsm6dso_stats_t g_lsm6dso_stats;
 /* Standard C headers for helpers used below */
 #include <string.h>
 #include <stdlib.h>
@@ -598,12 +600,63 @@ static int cmd_imu_dump(const struct shell *shell, size_t argc, char **argv)
     return 0;;
 }
 
+/* Get_Imu_Value()를 통해 accel/vel 4g/16g 모두 수행 후 결과 출력 */
+static int cmd_imu_get(const struct shell *shell, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc);
+    ARG_UNUSED(argv);
+
+    struct
+    {
+        const char *name;
+        uint8_t id;
+    } cases[] = {
+        {"acc_4g", SENSOR_ID_LSM6DSO_ACCEL_4G},
+        {"acc_16g", SENSOR_ID_LSM6DSO_ACCEL_16G},
+        {"vel_4g", SENSOR_ID_LSM6DSO_VELO_4G},
+        {"vel_16g", SENSOR_ID_LSM6DSO_VELO_16G},
+    };
+
+    for (size_t i = 0; i < ARRAY_SIZE(cases); ++i)
+    {
+        int rc = Get_Imu_Value(cases[i].id);
+        lsm6dso_stats_t *st = &g_lsm6dso_stats;
+
+        shell_print(shell, "[%s] rc=%d, n=%u, WHO=0x%02X", cases[i].name, rc,
+                    st->n, st->whoami);
+        if (st->n > 0)
+        {
+            shell_print(shell, "  PEAK (x,y,z) = (%d,%d,%d) x0.01 m/s^2",
+                        st->peak_ms2_x100[0], st->peak_ms2_x100[1],
+                        st->peak_ms2_x100[2]);
+            shell_print(shell, "  RMS  (x,y,z) = (%d,%d,%d) x0.01 m/s^2",
+                        st->rms_ms2_x100[0], st->rms_ms2_x100[1],
+                        st->rms_ms2_x100[2]);
+            shell_print(shell, "  10-1000Hz PEAK acc (x,y,z) = (%d,%d,%d) x0.01 m/s^2",
+                        st->bl_peak_ms2_x100[0], st->bl_peak_ms2_x100[1],
+                        st->bl_peak_ms2_x100[2]);
+            shell_print(shell, "  10-1000Hz RMS  acc (x,y,z) = (%d,%d,%d) x0.01 m/s^2",
+                        st->bl_rms_ms2_x100[0], st->bl_rms_ms2_x100[1],
+                        st->bl_rms_ms2_x100[2]);
+            shell_print(shell, "  10-1000Hz PEAK vel (x,y,z) = (%d,%d,%d) x0.01 mm/s",
+                        st->bl_peak_mmps_x100[0], st->bl_peak_mmps_x100[1],
+                        st->bl_peak_mmps_x100[2]);
+            shell_print(shell, "  10-1000Hz RMS  vel (x,y,z) = (%d,%d,%d) x0.01 mm/s",
+                        st->bl_rms_mmps_x100[0], st->bl_rms_mmps_x100[1],
+                        st->bl_rms_mmps_x100[2]);
+        }
+    }
+
+    return 0;
+}
+
 /* 쉘 서브커맨드 등록 */
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_imu,
                                SHELL_CMD(who, NULL, "LSM6DSO WHO_AM_I check", cmd_imu_who),
                                SHELL_CMD(test, NULL, "LSM6DSO Test start", cmd_imu_test),
                                SHELL_CMD(init, NULL, "LSM6DSO init (ODR=3.33k, FS=±4g)", cmd_imu_init),
                                SHELL_CMD(once, NULL, "Capture burst -> peak/rms [4g|16g|acc|vel]", cmd_imu_once),
+                               SHELL_CMD(get, NULL, "Get_Imu_Value for acc/vel 4g/16g", cmd_imu_get),
                                SHELL_CMD(regs, NULL, "Dump key IMU/FIFO registers", cmd_imu_regs),
                                SHELL_CMD(loop, NULL, "10s, every 0.5s capture+print [4g|16g]", cmd_imu_loop),
                                SHELL_CMD(cal, NULL, "Calibrate accel bias: cal set [4g|16g] | cal clear", cmd_imu_cal),

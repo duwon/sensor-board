@@ -841,8 +841,8 @@ static inline bool is_acc_tag(uint8_t tag, uint8_t acc_tag)
 static uint8_t detect_acc_tag(const uint8_t *buf, size_t len)
 {
   int c1 = 0, c2 = 0;
-  /* 더 넓은 구간을 스캔해 다수 TAG를 안정적으로 검출 (최대 512B) */
-  size_t probe = MIN(len, (size_t)512);
+  /* FIFO 선두 구간(최대 64B)에서 다수결로 TAG 검출 */
+  size_t probe = MIN(len, (size_t)64);
   if (probe <= FIFO_TAG_OFFSET)
     return 0x01;
   for (size_t i = 0; i + FIFO_TAG_OFFSET < probe; ++i)
@@ -853,7 +853,7 @@ static uint8_t detect_acc_tag(const uint8_t *buf, size_t len)
     else if (t == 0x02)
       c2++;
   }
-  return (c2 > c1) ? 0x02 : 0x01;
+  return (c2 > c1) ? 0x02 : 0x01; /* 동률이거나 0x01이 우세하면 0x01 선택 */
 }
 
 /* 7바이트 간격으로 TAG가 반복되는 시작 오프셋 찾기 (간단 휴리스틱) */
@@ -953,6 +953,8 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale)
    * ------------------------------ */
   fifo_debug_dump_config("DBG0_BEFORE");
   lsm6dso_debug_one_sample("BEFORE_CAP");
+  /* WHO_AM_I 캐시 */
+  rd_u8(REG_WHO_AM_I, &out->whoami);
 
   /* ------------------------------
    * Stage 0: 가속도 ODR + FIFO BDR 강제 재설정
