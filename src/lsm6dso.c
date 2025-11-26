@@ -4,11 +4,9 @@
  *
  * @details
  * LSM6DSO 가속도계 센서 드라이버
- * 3.33kHz의 고속 샘플링(ODR) 설정 후, FIFO를 사용하지 않고 DRDY(Data Ready)
- * 비트를 폴링(polling)하여 데이터를 직접 캡처합니다.
+ * 3.33kHz의 고속 샘플링(ODR) 설정 후, FIFO를 사용하지 않고 DRDY(Data Ready) 비트를 폴링(polling)하여 데이터를 직접 캡처합니다.
  *
- * 캡처된 데이터는 내장된 1024-point FFT 루틴을 통해 전체 대역(Broadband) 및
- * 특정 대역(10-1000Hz)의 RMS 및 Peak 값을 m/s^2 단위로 계산하는 데 사용됩니다.
+ * 캡처된 데이터는 내장된 1024-point FFT 루틴을 통해 전체 대역(Broadband) 및 특정 대역(10-1000Hz)의 RMS 및 Peak 값을 m/s^2 단위로 계산하는 데 사용됩니다.
  */
 
 #include "lsm6dso.h"
@@ -34,8 +32,7 @@ LOG_MODULE_REGISTER(lsm6dso, LOG_LEVEL_INF);
 /**
  * @brief Zephyr 스타일의 반환 코드(RC) 검사 매크로
  * @details
- * 표현식(expr)을 실행하고, 그 결과가 0 (성공)이 아니면 현재 함수에서 즉시 해당
- * 오류 코드를 반환합니다.
+ * 표현식(expr)을 실행하고, 그 결과가 0 (성공)이 아니면 현재 함수에서 즉시 해당 오류 코드를 반환합니다.
  * @param expr 평가할 표현식 (주로 I2C R/W 함수 호출)
  */
 #define RC(expr)       \
@@ -75,13 +72,12 @@ LOG_MODULE_REGISTER(lsm6dso, LOG_LEVEL_INF);
 /**
  * @name 전역 캡처 버퍼
  * @details
- * 쉘 스레드 등의 스택 오버플로우를 방지하기 위해 BSS 섹션에 큰 버퍼를 전역으로
- * 할당합니다. 이 버퍼들은 @ref lsm6dso_capture_once 및 FFT 처리(@ref
- * bandlimited_rms_peak_ms2_x100)에서 사용됩니다.
+ * 쉘 스레드 등의 스택 오버플로우를 방지하기 위해 BSS 섹션에 큰 버퍼를 전역으로 할당합니다. 이 버퍼들은 @ref lsm6dso_capture_once 및 FFT 처리(@ref bandlimited_rms_peak_ms2_x100)에서 사용됩니다.
  * @note 이름과 달리 실제로는 FIFO가 아닌 DRDY 폴링 캡처에 사용됩니다.
  * @{
  */
 #define FIFO_WTM_WORDS 500    /**< 캡처할 최대 샘플 수 (워드) - 9bit(512) 제한 근사 */
+#define FIFO_SLACK_WORDS 16   /**< TAG 불일치 대비 여유 읽기량 (워드) */
 #define FIFO_BYTES_PER_WORD 7 /**< FIFO에서 가속도 1샘플당 7B (XYZ+TAG) */
 #define FIFO_TAG_OFFSET 6     /**< FIFO 워드 내 TAG 위치 (마지막 바이트) */
 
@@ -90,10 +86,10 @@ static int16_t g_ax[FIFO_WTM_WORDS]; /**< X축 가속도 LSB 데이터 버퍼 */
 static int16_t g_ay[FIFO_WTM_WORDS]; /**< Y축 가속도 LSB 데이터 버퍼 */
 static int16_t g_az[FIFO_WTM_WORDS]; /**< Z축 가속도 LSB 데이터 버퍼 */
 
-/* FIFO RAW 버퍼: XYZ+TAG 순서 그대로 받아두는 용도 */
-static uint8_t g_fifo_raw[FIFO_WTM_WORDS * FIFO_BYTES_PER_WORD];
-static float g_cal_offset_lsb[3] = {0.f, 0.f,
-                                    0.f}; /**< 축별 보정 오프셋(LSB) */
+/* FIFO RAW 버퍼: XYZ+TAG 순서 그대로 받아두는 용도
+ * 목표 샘플(FIFO_WTM_WORDS)보다 약간 큰 여유(FIFO_SLACK_WORDS)를 두어 다른 TAG 패킷이 섞여도 목표 갯수를 확보 */
+static uint8_t g_fifo_raw[(FIFO_WTM_WORDS + FIFO_SLACK_WORDS) * FIFO_BYTES_PER_WORD];
+static float g_cal_offset_lsb[3] = {0.f, 0.f, 0.f}; /**< 축별 보정 오프셋(LSB) */
 static bool g_calc_acc = true;
 static bool g_calc_vel = true;
 
@@ -103,9 +99,8 @@ static bool g_calc_vel = true;
  * @name 하드웨어 및 I2C 정의
  * @{
  */
-static const struct device *i2c0 =
-    DEVICE_DT_GET(DT_NODELABEL(i2c0)); /**< I2C0 디바이스 포인터 */
-#define LSM6DSO_I2C_ADDR 0x6A          /**< LSM6DSO I2C 7비트 주소 */
+static const struct device *i2c0 = DEVICE_DT_GET(DT_NODELABEL(i2c0)); /**< I2C0 디바이스 포인터 */
+#define LSM6DSO_I2C_ADDR 0x6A                                         /**< LSM6DSO I2C 7비트 주소 */
 /** @} */
 
 /**
@@ -814,9 +809,7 @@ static int compute_psd_acc_vel_axis(const int16_t *lsb, uint16_t n,
   return 0;
 }
 
-/* 가속도 TAG 값(하위 nibble) — 대부분 0x01, 일부 리비전/설정에서 0x02일 수도
- * 있어 우선 0x01을 기본으로 하되, 청크에서 다수결로 동적으로 검출하여 사용
- */
+/* 가속도 TAG 값(하위 nibble) — 대부분 0x01, 일부 리비전/설정에서 0x02일 수도있어 우선 0x01을 기본으로 하되, 청크에서 다수결로 동적으로 검출하여 사용 */
 // static uint8_t detect_acc_tag(const uint8_t *buf, size_t len)
 // {
 //     int cnt1=0, cnt2=0;
@@ -832,8 +825,7 @@ static int compute_psd_acc_vel_axis(const int16_t *lsb, uint16_t n,
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #endif
 
-/* TAG 후보 검출 (가속도는 보통 0x01, 환경에 따라 0x02 케이스도 있어 다수결로
- * 선택) */
+/* TAG 후보 검출 (가속도는 보통 0x01, 환경에 따라 0x02 케이스도 있어 다수결로 선택) */
 static inline uint8_t fifo_tag_value(uint8_t raw_tag)
 {
   /* 일부 환경에서 TAG가 상위 nibble(0x20 등)에 나타나는 경우가 있어 보정 */
@@ -865,23 +857,6 @@ static uint8_t detect_acc_tag(const uint8_t *buf, size_t len)
   }
   return (c2 > c1) ? 0x02 : 0x01;
 }
-
-/* 청크 내에서 'acc_tag'가 7바이트 간격으로 반복되는 시작 오프셋을 찾는다.
- * 못 찾으면 0 리턴(가장 앞에서부터 시도).
- */
-// static size_t find_sync_7B(const uint8_t *buf, size_t len, uint8_t acc_tag)
-// {
-//     /* 후보 오프셋 0..6 을 시험 */
-//     for (size_t base=0; base<7 && base+7 <= len; ++base) {
-//         size_t ok=0;
-//         for (size_t i=base; i+7 <= len; i+=7) {
-//             if ( (buf[i] & 0x0F) == acc_tag ) { ok++; }
-//             else break;
-//         }
-//         if (ok >= 2) return base; /* 최소 2패킷 이상 연속이면 신뢰 */
-//     }
-//     return 0;
-// }
 
 /* 7바이트 간격으로 TAG가 반복되는 시작 오프셋 찾기 (간단 휴리스틱) */
 static size_t find_sync_7B(const uint8_t *buf, size_t len, uint8_t acc_tag)
@@ -946,28 +921,23 @@ static void lsm6dso_debug_one_sample(const char *tag)
 }
 
 /**
- * @brief 3.33kHz ODR에서 DRDY 폴링을 사용하여 가속도 데이터를 캡처하고 통계를
- * 계산합니다.
+ * @brief 3.33kHz ODR에서 DRDY 폴링을 사용하여 가속도 데이터를 캡처하고 통계를 계산합니다.
  *
  * @details
- * 이 함수는 FIFO를 BYPASS 모드로 직접 설정하여 DRDY(Data Ready) 폴링 방식을
- * 사용합니다.
+ * 이 함수는 FIFO를 BYPASS 모드로 직접 설정하여 DRDY(Data Ready) 폴링 방식을 사용합니다.
  *
  * 1. FIFO를 BYPASS 모드로 설정합니다.
  * 2. 약 160ms 동안 또는 최대 500개 샘플을 수집할 때까지
  * REG_STATUS_REG (0x1E)의 XLDA 비트(BIT 0)를 폴링(polling)합니다.
- * 3. 새 데이터(XLDA=1)가 준비되면 REG_OUTX_L_A (0x28)부터 6바이트를 읽어
- * g_ax, g_ay, g_az 전역 버퍼에 저장합니다.
+ * 3. 새 데이터(XLDA=1)가 준비되면 REG_OUTX_L_A (0x28)부터 6바이트를 읽어 g_ax, g_ay, g_az 전역 버퍼에 저장합니다.
  * 4. 캡처가 완료되면 전체 대역(Broadband)의 RMS/Peak (m/s^2)를 계산합니다.
  * 5. bandlimited_rms_peak_ms2_x100 를 호출하여
  * 10-1000 Hz 대역의 RMS/Peak (m/s^2)를 계산합니다.
  * 6. 모든 결과를 lsm6dso_stats_t 구조체에 채웁니다.
  *
  * @param[out] out 통계 결과를 저장할 lsm6dso_stats_t 구조체 포인터
- * @param scale 캡처 시 사용할 가속도 풀스케일(LSM6DSO_SCALE_4G 또는
- * LSM6DSO_SCALE_16G)
- * @return 0 on success (최소 1개 샘플 수집), -EINVAL if out is NULL,
- * -EIO if no samples collected, or I2C 에러 코드.
+ * @param scale 캡처 시 사용할 가속도 풀스케일(LSM6DSO_SCALE_4G 또는 LSM6DSO_SCALE_16G)
+ * @return 0 on success (최소 1개 샘플 수집), -EINVAL if out is NULL, -EIO if no samples collected, or I2C 에러 코드.
  */
 
 #if 1
@@ -991,10 +961,7 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale)
    * Stage 0: 가속도 ODR + FIFO BDR 강제 재설정
    * ------------------------------ */
   /* 3.33 kHz, ±4g 로 다시 한 번 명시적으로 세팅
-     (값은 기존에 쓰시던 값으로 맞춰도 됩니다. 예전엔 0xA8 코멘트, 지금은 0x98
-     사용 중이었음) */
-  RC(wr_u8(REG_CTRL1_XL, (uint8_t)(CTRL1_ODR_3k33 |
-                                   fs_bits))); /* ODR_XL=3.33k, FS=±4g/±16g */
+  RC(wr_u8(REG_CTRL1_XL, (uint8_t)(CTRL1_ODR_3k33 |                                   fs_bits))); /* ODR_XL=3.33k, FS=±4g/±16g */
 
   /* FIFO 배치 속도: XL만 3.333 kHz로 FIFO에 기록, Gyro는 0 */
   RC(wr_u8(REG_FIFO_CTRL3, 0x09)); /* BDR_GY=0000, BDR_XL=1001(3.333 kHz) */
@@ -1022,9 +989,9 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale)
   RC(wr_u8(REG_FIFO_CTRL2, (uint8_t)((FIFO_WTM_WORDS >> 8) & 0x0F)));
   LOG_INF("FIFOcap[1] WTM=%u words 설정", FIFO_WTM_WORDS);
 
-  /* STOP_ON_WTM=1 (OVERWRITE 방지) */
-  RC(wr_u8(REG_FIFO_CTRL4, STOP_ON_WTM_BIT));
-  LOG_INF("FIFOcap[2] STOP_ON_WTM=1 설정");
+  /* STOP_ON_WTM=0: watermark에서 멈추지 않고 계속 채워서 여유분 확보 */
+  RC(wr_u8(REG_FIFO_CTRL4, 0x00));
+  LOG_INF("FIFOcap[2] STOP_ON_WTM=0 설정 (overwrite 허용)");
 
   /* ------------------------------
    * Stage 2: FIFO 모드 진입
@@ -1108,7 +1075,8 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale)
    * ------------------------------ */
   /* 여유분까지 읽어서 TAG 불일치로 스킵되는 샘플을 보충 */
   uint16_t words_to_read = diff_w;
-  const uint16_t read_cap = FIFO_WTM_WORDS + 16; /* 9bit 제한(512) 내 여유 */
+  /* FIFO는 9bit 깊이(최대 512 word)이므로 여기서 상한을 강제로 512로 제한 */
+  const uint16_t read_cap = MIN((uint16_t)512, (uint16_t)(FIFO_WTM_WORDS + FIFO_SLACK_WORDS));
   if (words_to_read > read_cap)
     words_to_read = read_cap;
 
