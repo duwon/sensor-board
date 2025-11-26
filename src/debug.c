@@ -586,18 +586,17 @@ static int cmd_imu_test(const struct shell *shell, size_t argc, char **argv)
 
 static int cmd_imu_dump(const struct shell *shell, size_t argc, char **argv)
 {
-    uint16_t bytes = 224;
-    if (argc >= 2)
-    {
-        int v = atoi(argv[1]);
-        if (v > 0)
-            bytes = (uint16_t)v;
-    }
-    // int rc = lsm6dso_dump_fifo(shell, bytes);
-    // shell_print(shell, "imu dump: rc=%d", rc);
-    // return rc;
-
-    return 0;;
+  uint16_t bytes = 224;
+  if (argc >= 2)
+  {
+    int v = atoi(argv[1]);
+    if (v > 0)
+      bytes = (uint16_t)v;
+  }
+  /* 실제 FIFO를 읽어 덤프 */
+  int rc = lsm6dso_dump_fifo(shell, bytes);
+  shell_print(shell, "imu dump: rc=%d", rc);
+  return rc;
 }
 
 /* Get_Imu_Value()를 통해 accel/vel 4g/16g 모두 수행 후 결과 출력 */

@@ -79,7 +79,7 @@ LOG_MODULE_REGISTER(lsm6dso, LOG_LEVEL_INF);
 #define FIFO_WTM_WORDS 500    /**< 캡처할 최대 샘플 수 (워드) - 9bit(512) 제한 근사 */
 #define FIFO_SLACK_WORDS 12   /**< TAG 불일치 대비 여유 읽기량 (워드) */
 #define FIFO_BYTES_PER_WORD 7 /**< FIFO에서 가속도 1샘플당 7B (XYZ+TAG) */
-#define FIFO_TAG_OFFSET 6     /**< FIFO 워드 내 TAG 위치 (마지막 바이트) */
+#define FIFO_TAG_OFFSET 0     /**< FIFO 워드 내 TAG 위치 (첫 바이트) */
 
 /* 캡처 대상 배열 (BSS) */
 static int16_t g_ax[FIFO_WTM_WORDS]; /**< X축 가속도 LSB 데이터 버퍼 */
@@ -265,7 +265,7 @@ static int lsm6dso_apply_fifo_base(void)
   /* 타임스탬프 OFF, XL만 FIFO에 배치, STOP_ON_WTM=0, 워터마크 설정 */
   RC(wr_u8(REG_CTRL10_C, 0x00));
   RC(wr_u8(REG_FIFO_CTRL3, 0x09)); /* XL only @ 3.33kHz, Gyro off */
-  RC(wr_u8(REG_FIFO_CTRL4, 0x00)); /* overwrite 허용, WTM에서 멈추지 않음 */
+  RC(wr_u8(REG_FIFO_CTRL4, STOP_ON_WTM_BIT)); /* WTM 도달 시 정지 */
   RC(wr_u8(REG_FIFO_CTRL1, (uint8_t)(FIFO_WTM_WORDS & 0xFF)));
   RC(wr_u8(REG_FIFO_CTRL2, (uint8_t)((FIFO_WTM_WORDS >> 8) & 0x0F)));
   return 0;
@@ -834,8 +834,8 @@ static inline uint8_t fifo_tag_value(uint8_t raw_tag)
 
 static inline bool is_acc_tag(uint8_t tag, uint8_t acc_tag)
 {
-  /* 감지된 가속도 TAG와 정확히 일치하는 경우에만 인정 */
-  return tag == acc_tag;
+  /* 가속도 TAG는 0x01/0x02 두 종류가 관측되므로 둘 다 허용, 기타는 제외 */
+  return tag == acc_tag || tag == 0x01 || tag == 0x02;
 }
 
 static uint8_t detect_acc_tag(const uint8_t *buf, size_t len)
@@ -980,9 +980,9 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale)
   RC(wr_u8(REG_FIFO_CTRL2, (uint8_t)((FIFO_WTM_WORDS >> 8) & 0x0F)));
   LOG_INF("FIFOcap[1] WTM=%u words 설정", FIFO_WTM_WORDS);
 
-  /* STOP_ON_WTM=0: watermark에서 멈추지 않고 계속 채워서 여유분 확보 */
-  RC(wr_u8(REG_FIFO_CTRL4, 0x00));
-  LOG_INF("FIFOcap[2] STOP_ON_WTM=0 설정 (overwrite 허용)");
+  /* STOP_ON_WTM=1: WTM 도달 시 정지 (덮어쓰기 방지) */
+  RC(wr_u8(REG_FIFO_CTRL4, STOP_ON_WTM_BIT));
+  LOG_INF("FIFOcap[2] STOP_ON_WTM=1 설정 (overwrite 방지)");
 
   /* ------------------------------
    * Stage 2: FIFO 모드 진입
@@ -1064,12 +1064,10 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale)
   /* ------------------------------
    * Stage 4: FIFO 단일 버스트 읽기
    * ------------------------------ */
-  /* 여유분까지 읽어서 TAG 불일치로 스킵되는 샘플을 보충 */
+  /* STOP_ON_WTM=1 환경: 워터마크까지만 읽음 */
   uint16_t words_to_read = diff_w;
-  /* FIFO는 9bit 깊이(최대 512 word)이므로 여기서 상한을 강제로 512로 제한 */
-  const uint16_t read_cap = MIN((uint16_t)512, (uint16_t)(FIFO_WTM_WORDS + FIFO_SLACK_WORDS));
-  if (words_to_read > read_cap)
-    words_to_read = read_cap;
+  if (words_to_read > FIFO_WTM_WORDS)
+    words_to_read = FIFO_WTM_WORDS;
 
   uint32_t bytes_req =
       (uint32_t)words_to_read * FIFO_BYTES_PER_WORD; /* N word × 7B */
@@ -1106,6 +1104,9 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale)
           (unsigned)sync_off);
 
   uint16_t n = 0;
+  uint16_t pkt_total = 0;
+  uint16_t pkt_skipped = 0;
+  uint16_t tag_hist[16] = {0};
 
   /* 디버그: 첫 28바이트(4패킷) 확인 */
   LOG_INF("FIFOcap[DBG_PARSE] First 28B:");
@@ -1114,10 +1115,10 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale)
        dbg_i += FIFO_BYTES_PER_WORD)
   {
     uint8_t raw_tag = g_fifo_raw[dbg_i + FIFO_TAG_OFFSET];
-    LOG_INF("  [%02u] DATA: %02X %02X %02X %02X %02X %02X | TAG=0x%02X(val=%u)",
-            (unsigned)(dbg_i / 7), g_fifo_raw[dbg_i], g_fifo_raw[dbg_i + 1],
-            g_fifo_raw[dbg_i + 2], g_fifo_raw[dbg_i + 3], g_fifo_raw[dbg_i + 4],
-            g_fifo_raw[dbg_i + 5], raw_tag, fifo_tag_value(raw_tag));
+    LOG_INF("  [%02u] TAG=0x%02X(val=%u) DATA: %02X %02X %02X %02X %02X %02X",
+            (unsigned)(dbg_i / 7), raw_tag, fifo_tag_value(raw_tag),
+            g_fifo_raw[dbg_i + 1], g_fifo_raw[dbg_i + 2], g_fifo_raw[dbg_i + 3],
+            g_fifo_raw[dbg_i + 4], g_fifo_raw[dbg_i + 5], g_fifo_raw[dbg_i + 6]);
   }
 
   for (size_t i = sync_off;
@@ -1126,6 +1127,9 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale)
   {
     uint8_t raw_tag = g_fifo_raw[i + FIFO_TAG_OFFSET];
     uint8_t tag = fifo_tag_value(raw_tag);
+    if (tag < ARRAY_SIZE(tag_hist))
+      tag_hist[tag]++;
+    pkt_total++;
 
     /* 디버그: 처음 5개 패킷의 TAG 체크 */
     if (n < 5)
@@ -1137,14 +1141,17 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale)
     }
 
     if (!is_acc_tag(tag, acc_tag))
+    {
+      pkt_skipped++;
       continue; /* 다른 TAG는 건너뛰고 다음 패킷 확인 */
+    }
 
-    int16_t x = (int16_t)((uint16_t)g_fifo_raw[i + 0] |
-                          ((uint16_t)g_fifo_raw[i + 1] << 8));
-    int16_t y = (int16_t)((uint16_t)g_fifo_raw[i + 2] |
-                          ((uint16_t)g_fifo_raw[i + 3] << 8));
-    int16_t z = (int16_t)((uint16_t)g_fifo_raw[i + 4] |
-                          ((uint16_t)g_fifo_raw[i + 5] << 8));
+    int16_t x = (int16_t)((uint16_t)g_fifo_raw[i + 1] |
+                          ((uint16_t)g_fifo_raw[i + 2] << 8));
+    int16_t y = (int16_t)((uint16_t)g_fifo_raw[i + 3] |
+                          ((uint16_t)g_fifo_raw[i + 4] << 8));
+    int16_t z = (int16_t)((uint16_t)g_fifo_raw[i + 5] |
+                          ((uint16_t)g_fifo_raw[i + 6] << 8));
 
     g_ax[n] = x;
     g_ay[n] = y;
@@ -1154,6 +1161,10 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale)
 
   out->n = n;
   LOG_INF("FIFOcap[7] parsed accel samples: n=%u (목표 N=%u)", n, FIFO_WTM_WORDS);
+  LOG_INF("FIFOcap[7] pkt_total=%u, pkt_skipped(non-acc)=%u, tag_hist: "
+          "0x0=%u 0x1=%u 0x2=%u 0xF=%u",
+          pkt_total, pkt_skipped, tag_hist[0], tag_hist[1], tag_hist[2],
+          tag_hist[0xF]);
 
   if (n == 0)
   {
@@ -1592,10 +1603,10 @@ int lsm6dso_dump_fifo(const struct shell *shell, uint16_t bytes_req)
   uint16_t shown = 0;
   for (size_t i = off; i + FIFO_BYTES_PER_WORD <= bytes_now && shown < 32; i += FIFO_BYTES_PER_WORD)
   {
-    int16_t x = (int16_t)((uint16_t)buf[i + 0] | ((uint16_t)buf[i + 1] << 8));
-    int16_t y = (int16_t)((uint16_t)buf[i + 2] | ((uint16_t)buf[i + 3] << 8));
-    int16_t z = (int16_t)((uint16_t)buf[i + 4] | ((uint16_t)buf[i + 5] << 8));
     uint8_t raw_tag = buf[i + FIFO_TAG_OFFSET];
+    int16_t x = (int16_t)((uint16_t)buf[i + 1] | ((uint16_t)buf[i + 2] << 8));
+    int16_t y = (int16_t)((uint16_t)buf[i + 3] | ((uint16_t)buf[i + 4] << 8));
+    int16_t z = (int16_t)((uint16_t)buf[i + 5] | ((uint16_t)buf[i + 6] << 8));
     uint8_t tag = fifo_tag_value(raw_tag);
     shell_print(shell, "[%02u] X=%6d  Y=%6d  Z=%6d  TAG=0x%02X(val=%u) (LSB)",
                 shown, x, y, z, raw_tag, tag);
