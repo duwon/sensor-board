@@ -77,7 +77,7 @@ LOG_MODULE_REGISTER(lsm6dso, LOG_LEVEL_INF);
  * @{
  */
 #define FIFO_WTM_WORDS 500    /**< 캡처할 최대 샘플 수 (워드) - 9bit(512) 제한 근사 */
-#define FIFO_SLACK_WORDS 16   /**< TAG 불일치 대비 여유 읽기량 (워드) */
+#define FIFO_SLACK_WORDS 12   /**< TAG 불일치 대비 여유 읽기량 (워드) */
 #define FIFO_BYTES_PER_WORD 7 /**< FIFO에서 가속도 1샘플당 7B (XYZ+TAG) */
 #define FIFO_TAG_OFFSET 6     /**< FIFO 워드 내 TAG 위치 (마지막 바이트) */
 
@@ -252,19 +252,36 @@ static int rd_block(uint8_t reg, uint8_t *buf, size_t len)
 }
 /** @} */
 
+/* 공통 설정 래퍼 */
+static int lsm6dso_set_fs(lsm6dso_scale_t scale)
+{
+  const bool use_16g = (scale == LSM6DSO_SCALE_16G);
+  const uint8_t fs_bits = use_16g ? FS_XL_16G : FS_XL_4G;
+  return wr_u8(REG_CTRL1_XL, (uint8_t)(CTRL1_ODR_3k33 | fs_bits));
+}
+
+static int lsm6dso_apply_fifo_base(void)
+{
+  /* 타임스탬프 OFF, XL만 FIFO에 배치, STOP_ON_WTM=0, 워터마크 설정 */
+  RC(wr_u8(REG_CTRL10_C, 0x00));
+  RC(wr_u8(REG_FIFO_CTRL3, 0x09)); /* XL only @ 3.33kHz, Gyro off */
+  RC(wr_u8(REG_FIFO_CTRL4, 0x00)); /* overwrite 허용, WTM에서 멈추지 않음 */
+  RC(wr_u8(REG_FIFO_CTRL1, (uint8_t)(FIFO_WTM_WORDS & 0xFF)));
+  RC(wr_u8(REG_FIFO_CTRL2, (uint8_t)((FIFO_WTM_WORDS >> 8) & 0x0F)));
+  return 0;
+}
+
 static inline int fifo_set_mode(uint8_t mode)
 {
   int rc;
   uint8_t ctrl4 = 0;
 
-  /* 1. ODR 설정: FIFO_CTRL5 (0x0B) bits[6:3] */
-  /* 기존 코드에서 mode가 CTRL5에 들어가는 문제 수정 */
+  /* 1. ODR 설정: FIFO_CTRL5 (0x0B) bits[6:3] 기존 코드에서 mode가 CTRL5에 들어가는 문제 수정 */
   rc = wr_u8(REG_FIFO_CTRL5, ODR_FIFO_3k33_SH);
   if (rc)
     return rc;
 
-  /* 2. Mode 설정: FIFO_CTRL4 (0x0A) bits[2:0] */
-  /* 기존 설정을 유지하면서 Mode 비트만 변경 (RMW) */
+  /* 2. Mode 설정: FIFO_CTRL4 (0x0A) bits[2:0] 기존 설정을 유지하면서 Mode 비트만 변경 (RMW) */
   rc = rd_u8(REG_FIFO_CTRL4, &ctrl4);
   if (rc)
     return rc;
@@ -342,8 +359,7 @@ int lsm6dso_dump_regs(const struct shell *shell)
  *
  * @note
  * 이 함수는 센서의 *파라미터* (ODR, FS)를 설정합니다.
- * 하지만 @ref lsm6dso_capture_once 함수는 캡처 시 FIFO 모드를 BYPASS로
- * 전환하고, 호출 시 scale 파라미터(±4g/±16g)에 맞춰 FS를 다시 설정합니다.
+ * 하지만 @ref lsm6dso_capture_once 함수는 캡처 시 FIFO 모드를 BYPASS로 전환하고, 호출 시 scale 파라미터(±4g/±16g)에 맞춰 FS를 다시 설정합니다.
  *
  * @return 0 on success, 음수 에러 코드 on failure.
  */
@@ -356,33 +372,15 @@ int lsm6dso_init()
   RC(wr_u8(REG_CTRL9_XL, CTRL9_XL_I3C_DISABLE));        // I3C disable
   RC(wr_u8(REG_CTRL2_G, ODR_G_POWER_DOWN));             // Gyro off
 
-  /* 타임스탬프 끄기 + 가속도만 배치 */
-  RC(wr_u8(REG_CTRL10_C, 0x00));   /* TIMESTAMP_EN=0 */
-  RC(wr_u8(REG_FIFO_CTRL3, 0x09)); /* XL only @ 3.33kHz, Gyro off */
+  /* 기본 FS=±4g, 3.33kHz */
+  RC(lsm6dso_set_fs(LSM6DSO_SCALE_4G));
 
-  /* 2) XL ODR/FS 설정 (3.33 kHz, ±4g) */
-  /* 3.33 kHz, ±4g  (ODR_XL=0b1010, FS=±4g → 0xA8) */
-  RC(wr_u8(REG_CTRL1_XL, 0x98));
+  /* FIFO 기본 설정 (WTM, STOP_ON_WTM=0, XL만 배치) */
+  RC(lsm6dso_apply_fifo_base());
 
-  /* 안전하게 BYPASS로 두고 시작 (ODR_FIFO=3.33kHz 설정은 유지) */
+  /* BYPASS로 초기화 후 안정 대기 */
   RC(fifo_set_mode(FIFO_MODE_BYPASS));
-
-  /* 3) FIFO 배치 속도(BDR) 설정 — XL만 3.333 kHz로 활성화, Gyro는 0 */
-  /* BDR_GY=0000, BDR_XL=1001(3.333 kHz) -> 0x09 */
-  // RC(wr_u8(REG_FIFO_CTRL3, (0x0 << 4) | 0x9));
-
-  /* 4) 워터마크(500 워드) 설정 */
-  RC(wr_u8(REG_FIFO_CTRL1, (FIFO_WTM_WORDS & 0xFF)));
-  RC(wr_u8(REG_FIFO_CTRL2, ((FIFO_WTM_WORDS >> 8) & 0x0F)));
-
-  /* 5) FIFO 모드 진입 (Continuous) */
-  /* @note lsm6dso_capture_once()는 이 설정을 덮어쓰고 BYPASS(0x00)를 사용함 */
-  RC(fifo_set_mode(FIFO_MODE_CONTINUOUS));
-
-  /* 레지스터 변경이 안되서 재 입력 */
-  RC(wr_u8(REG_CTRL10_C, 0x00));           /* 타임스탬프 OFF */
-  RC(wr_u8(REG_FIFO_CTRL3, 0x09));         /* 가속도만 라우팅 */
-  RC(fifo_set_mode(FIFO_MODE_CONTINUOUS)); /* => CTRL5 = 0x48|0x06 = 0x4E */
+  k_sleep(K_MSEC(5));
 
   return 0;
 }
@@ -948,7 +946,6 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale)
   memset(out, 0, sizeof(*out));
 
   const bool use_16g = (lsm6dso_scale == LSM6DSO_SCALE_16G);
-  const uint8_t fs_bits = use_16g ? FS_XL_16G : FS_XL_4G;
   const float lsb_to_ms2 = use_16g ? SENS_LSB_TO_MS2_16G : SENS_LSB_TO_MS2_4G;
 
   /* ------------------------------
@@ -961,16 +958,8 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale)
    * Stage 0: 가속도 ODR + FIFO BDR 강제 재설정
    * ------------------------------ */
   /* 3.33 kHz, ±4g 로 다시 한 번 명시적으로 세팅
-  RC(wr_u8(REG_CTRL1_XL, (uint8_t)(CTRL1_ODR_3k33 |                                   fs_bits))); /* ODR_XL=3.33k, FS=±4g/±16g */
-
-  /* FIFO 배치 속도: XL만 3.333 kHz로 FIFO에 기록, Gyro는 0 */
-  RC(wr_u8(REG_FIFO_CTRL3, 0x09)); /* BDR_GY=0000, BDR_XL=1001(3.333 kHz) */
-
-  /* 디버그용으로 다시 읽어서 찍기 */
-  fifo_debug_dump_config("DBG1_AFTER_ODR_BDR");
-
-  /* 타임스탬프는 끄고 시작 */
-  RC(wr_u8(REG_CTRL10_C, 0x00));
+  RC(lsm6dso_set_fs(lsm6dso_scale)); /* ODR=3.33kHz 유지, FS만 변경 */
+  RC(lsm6dso_apply_fifo_base());     /* BDR/WTM/STOP_ON_WTM=0 재확인 */
 
   /* ------------------------------
    * Stage 1: FIFO 리셋 (BYPASS)
