@@ -38,33 +38,38 @@ LOG_MODULE_REGISTER(lsm6dso, LOG_LEVEL_INF);
  * 오류 코드를 반환합니다.
  * @param expr 평가할 표현식 (주로 I2C R/W 함수 호출)
  */
-#define RC(expr)                                                               \
-  do {                                                                         \
-    int __rc = (expr);                                                         \
-    if (__rc)                                                                  \
-      return __rc;                                                             \
+#define RC(expr)       \
+  do                   \
+  {                    \
+    int __rc = (expr); \
+    if (__rc)          \
+      return __rc;     \
   } while (0)
 
 // I2C 반환 코드를 로그로 출력하는 매크로 (오류 발생 시 디버그 정보 추가)
-#define LOG_RC(expr, name)                                                     \
-  ({                                                                           \
-    int __rc = (expr);                                                         \
-    if (__rc != 0) {                                                           \
-      LOG_ERR("I2C Error [%s]: %d at %s:%d", name, __rc, __func__, __LINE__);  \
-    }                                                                          \
-    __rc;                                                                      \
+#define LOG_RC(expr, name)                                                    \
+  ({                                                                          \
+    int __rc = (expr);                                                        \
+    if (__rc != 0)                                                            \
+    {                                                                         \
+      LOG_ERR("I2C Error [%s]: %d at %s:%d", name, __rc, __func__, __LINE__); \
+    }                                                                         \
+    __rc;                                                                     \
   })
 
-#define RC_CHECK(rc)                                                           \
-  ({                                                                           \
-    int __rc = (rc);                                                           \
-    if (__rc != 0) {                                                           \
-      LOG_ERR("I2C Error: %d at %s:%d", __rc, __func__, __LINE__);             \
-      __rc = 1; /* 이 매크로 자체의 반환값 (성공 0, 실패 1) */                 \
-    } else {                                                                   \
-      __rc = 0;                                                                \
-    }                                                                          \
-    __rc;                                                                      \
+#define RC_CHECK(rc)                                               \
+  ({                                                               \
+    int __rc = (rc);                                               \
+    if (__rc != 0)                                                 \
+    {                                                              \
+      LOG_ERR("I2C Error: %d at %s:%d", __rc, __func__, __LINE__); \
+      __rc = 1; /* 이 매크로 자체의 반환값 (성공 0, 실패 1) */     \
+    }                                                              \
+    else                                                           \
+    {                                                              \
+      __rc = 0;                                                    \
+    }                                                              \
+    __rc;                                                          \
   })
 
 /**
@@ -76,8 +81,7 @@ LOG_MODULE_REGISTER(lsm6dso, LOG_LEVEL_INF);
  * @note 이름과 달리 실제로는 FIFO가 아닌 DRDY 폴링 캡처에 사용됩니다.
  * @{
  */
-#define FIFO_WTM_WORDS                                                         \
-  300 /**< 캡처할 최대 샘플 수 (워드) - 9bit(512) 제한 고려 */
+#define FIFO_WTM_WORDS 500    /**< 캡처할 최대 샘플 수 (워드) - 9bit(512) 제한 근사 */
 #define FIFO_BYTES_PER_WORD 7 /**< FIFO에서 가속도 1샘플당 7B (XYZ+TAG) */
 #define FIFO_TAG_OFFSET 6     /**< FIFO 워드 내 TAG 위치 (마지막 바이트) */
 
@@ -162,10 +166,8 @@ static const struct device *i2c0 =
 #define PSD_HANN_CG 0.4994994995f
 #define PSD_HANN_U 0.3746246246f
 #define G_CONST_MS2 9.80665f
-#define MMPS_X100(v_mps)                                                       \
-  ((int16_t)((v_mps * 100000.0f) + ((v_mps >= 0.f) ? 0.5f : -0.5f)))
-#define MS2_X100(v_ms2)                                                        \
-  ((int16_t)((v_ms2 * 100.0f) + ((v_ms2 >= 0.f) ? 0.5f : -0.5f)))
+#define MMPS_X100(v_mps) ((int16_t)((v_mps * 100000.0f) + ((v_mps >= 0.f) ? 0.5f : -0.5f)))
+#define MS2_X100(v_ms2) ((int16_t)((v_ms2 * 100.0f) + ((v_ms2 >= 0.f) ? 0.5f : -0.5f)))
 
 /* REG_CTRL2_G: Gyroscope */
 #define ODR_G_POWER_DOWN (0x0 << 4) /**< 자이로스코프 파워 다운 */
@@ -177,11 +179,10 @@ static const struct device *i2c0 =
  * @note @ref lsm6dso_init 에서는 0x9 (3.33kHz)를 사용합니다.
  */
 #define BDR_XL_3k33 (0x0A)
-#define FIFO_CTRL4_STOP_ON_WTM                                                 \
-  BIT(5)                     /**< Watermark 도달 시 FIFO 중지 (0=Overwrite) */
-#define FIFO_MODE_BYPASS 0x0 /**< FIFO 모드: Bypass (000b) */
-#define FIFO_MODE_FIFO 0x1   /**< FIFO 모드: FIFO (001b) */
-#define FIFO_MODE_CONTINUOUS 0x6 /**< FIFO 모드: Continuous (110b) */
+#define FIFO_CTRL4_STOP_ON_WTM BIT(5) /**< Watermark 도달 시 FIFO 중지 (0=Overwrite) */
+#define FIFO_MODE_BYPASS 0x0          /**< FIFO 모드: Bypass (000b) */
+#define FIFO_MODE_FIFO 0x1            /**< FIFO 모드: FIFO (001b) */
+#define FIFO_MODE_CONTINUOUS 0x6      /**< FIFO 모드: Continuous (110b) */
 #define STOP_ON_WTM_BIT BIT(5)
 #define ACC_TAG 0x01 /* XL Tag 값 (하위 nibble) */
 
@@ -209,7 +210,8 @@ static const struct device *i2c0 =
  * @param val 쓸 값
  * @return 0 on success, 음수 에러 코드 on failure.
  */
-static int wr_u8(uint8_t reg, uint8_t val) {
+static int wr_u8(uint8_t reg, uint8_t val)
+{
   uint8_t buf[2] = {reg, val};
   return i2c_write(i2c0, buf, sizeof(buf), LSM6DSO_I2C_ADDR);
 }
@@ -220,11 +222,13 @@ static int wr_u8(uint8_t reg, uint8_t val) {
  * @param[out] val 읽은 값을 저장할 포인터
  * @return 0 on success, 음수 에러 코드 on failure.
  */
-static int rd_u8(uint8_t reg, uint8_t *val) {
+static int rd_u8(uint8_t reg, uint8_t *val)
+{
   return i2c_write_read(i2c0, LSM6DSO_I2C_ADDR, &reg, 1, val, 1);
 }
 
-int rd_u16(uint8_t reg, uint16_t *data_out) {
+int rd_u16(uint8_t reg, uint16_t *data_out)
+{
   uint8_t raw_data[2]; // LSB, MSB 순서로 데이터를 저장할 배열
   int rc;
 
@@ -247,12 +251,14 @@ int rd_u16(uint8_t reg, uint16_t *data_out) {
  * @param len 읽을 바이트 수
  * @return 0 on success, 음수 에러 코드 on failure.
  */
-static int rd_block(uint8_t reg, uint8_t *buf, size_t len) {
+static int rd_block(uint8_t reg, uint8_t *buf, size_t len)
+{
   return i2c_write_read(i2c0, LSM6DSO_I2C_ADDR, &reg, 1, buf, len);
 }
 /** @} */
 
-static inline int fifo_set_mode(uint8_t mode) {
+static inline int fifo_set_mode(uint8_t mode)
+{
   int rc;
   uint8_t ctrl4 = 0;
 
@@ -274,15 +280,18 @@ static inline int fifo_set_mode(uint8_t mode) {
   return wr_u8(REG_FIFO_CTRL4, ctrl4);
 }
 
-static inline int fifo_expect_ctrl5(const struct shell *sh, uint8_t expect) {
+static inline int fifo_expect_ctrl5(const struct shell *sh, uint8_t expect)
+{
   uint8_t v = 0;
   int rc = rd_u8(REG_FIFO_CTRL5, &v);
-  if (rc) {
+  if (rc)
+  {
     if (sh)
       shell_print(sh, "rd CTRL5 rc=%d", rc);
     return rc;
   }
-  if (v != expect) {
+  if (v != expect)
+  {
     if (sh)
       shell_print(sh, "CTRL5 mismatch: got 0x%02X, want 0x%02X", v, expect);
     return -EIO;
@@ -295,7 +304,8 @@ static inline int fifo_expect_ctrl5(const struct shell *sh, uint8_t expect) {
  * @param shell 쉘 인스턴스 포인터
  * @return 0 on success, 음수 에러 코드 on failure (I2C 오류 발생 시).
  */
-int lsm6dso_dump_regs(const struct shell *shell) {
+int lsm6dso_dump_regs(const struct shell *shell)
+{
   uint8_t v;
   uint8_t b[2];
 
@@ -333,7 +343,7 @@ int lsm6dso_dump_regs(const struct shell *shell) {
  * - FIFO 모드 설정 (Bypass -> Continuous)
  * - 가속도계 ODR: 3.33 kHz (0x9), 기본 FS: ±4g
  * - FIFO BDR: 3.33 kHz (0x9) (가속도계만)
- * - FIFO Watermark: @ref FIFO_WTM_WORDS (999)
+ * - FIFO Watermark: @ref FIFO_WTM_WORDS (500)
  *
  * @note
  * 이 함수는 센서의 *파라미터* (ODR, FS)를 설정합니다.
@@ -342,7 +352,8 @@ int lsm6dso_dump_regs(const struct shell *shell) {
  *
  * @return 0 on success, 음수 에러 코드 on failure.
  */
-int lsm6dso_init() {
+int lsm6dso_init()
+{
   /* 0) 소프트 리셋(선택) */
   /* wr_u8(REG_CTRL3_C, CTRL3_C_SW_RESET); k_sleep(K_MSEC(2)); */
 
@@ -365,7 +376,7 @@ int lsm6dso_init() {
   /* BDR_GY=0000, BDR_XL=1001(3.333 kHz) -> 0x09 */
   // RC(wr_u8(REG_FIFO_CTRL3, (0x0 << 4) | 0x9));
 
-  /* 4) 워터마크(999 워드) 설정 */
+  /* 4) 워터마크(500 워드) 설정 */
   RC(wr_u8(REG_FIFO_CTRL1, (FIFO_WTM_WORDS & 0xFF)));
   RC(wr_u8(REG_FIFO_CTRL2, ((FIFO_WTM_WORDS >> 8) & 0x0F)));
 
@@ -394,10 +405,12 @@ static bool tw_ready = false; /**< 트위들 팩터 초기화 여부 */
 /**
  * @brief FFT 트위들 팩터 (e^(-j*2*pi*k/N))를 미리 계산하여 캐시합니다.
  */
-static void twiddle_init(void) {
+static void twiddle_init(void)
+{
   if (tw_ready)
     return;
-  for (int k = 0; k < NFFT / 2; ++k) {
+  for (int k = 0; k < NFFT / 2; ++k)
+  {
     double ang = -2.0 * M_PI * k / (double)NFFT;
     tw_re[k] = (float)cos(ang);
     tw_im[k] = (float)sin(ang);
@@ -411,9 +424,11 @@ static void twiddle_init(void) {
  * @param log2n NFFT의 log2 (e.g., 1024 -> 10)
  * @return 비트 반전된 인덱스
  */
-static unsigned bitrev(unsigned x, int log2n) {
+static unsigned bitrev(unsigned x, int log2n)
+{
   unsigned n = 0;
-  for (int i = 0; i < log2n; ++i) {
+  for (int i = 0; i < log2n; ++i)
+  {
     n = (n << 1) | (x & 1);
     x >>= 1;
   }
@@ -432,14 +447,17 @@ static unsigned bitrev(unsigned x, int log2n) {
  * @param[in,out] im 허수부 배열
  * @param inverse 0=FFT, 0이 아니면=iFFT (역변환)
  */
-static void fft_radix2(float *re, float *im, int inverse) {
+static void fft_radix2(float *re, float *im, int inverse)
+{
   twiddle_init();
   const int log2n = 10; /* 2^10 = 1024 */
 
   /* 1. Bit-reversal permutation */
-  for (unsigned i = 0; i < NFFT; ++i) {
+  for (unsigned i = 0; i < NFFT; ++i)
+  {
     unsigned j = bitrev(i, log2n);
-    if (j > i) {
+    if (j > i)
+    {
       float tr = re[i], ti = im[i];
       re[i] = re[j];
       im[i] = im[j];
@@ -449,11 +467,14 @@ static void fft_radix2(float *re, float *im, int inverse) {
   }
 
   /* 2. Butterfly stages */
-  for (unsigned len = 2; len <= NFFT; len <<= 1) {
+  for (unsigned len = 2; len <= NFFT; len <<= 1)
+  {
     unsigned half = len >> 1;
     unsigned step = NFFT / len;
-    for (unsigned i = 0; i < NFFT; i += len) {
-      for (unsigned k = 0; k < half; ++k) {
+    for (unsigned i = 0; i < NFFT; i += len)
+    {
+      for (unsigned k = 0; k < half; ++k)
+      {
         unsigned idx = k * step;
         float wr = tw_re[idx];
         float wi = inverse ? -tw_im[idx] : tw_im[idx]; /* iFFT는 공액 */
@@ -469,9 +490,11 @@ static void fft_radix2(float *re, float *im, int inverse) {
   }
 
   /* 3. iFFT 정규화 */
-  if (inverse) {
+  if (inverse)
+  {
     const float invN = 1.0f / (float)NFFT;
-    for (unsigned i = 0; i < NFFT; ++i) {
+    for (unsigned i = 0; i < NFFT; ++i)
+    {
       re[i] *= invN;
       im[i] *= invN;
     }
@@ -489,12 +512,15 @@ static void fft_radix2(float *re, float *im, int inverse) {
  * @param[out] w 윈도우 값을 저장할 배열
  * @param n 윈도우 길이
  */
-static void make_hann(float *w, int n) {
-  if (n <= 1) {
+static void make_hann(float *w, int n)
+{
+  if (n <= 1)
+  {
     w[0] = 1.f;
     return;
   }
-  for (int i = 0; i < n; ++i) {
+  for (int i = 0; i < n; ++i)
+  {
     /* w(i) = 0.5 * (1 - cos(2*pi*i / (n-1))) */
     w[i] = 0.5f * (1.0f - cosf(2.0f * (float)M_PI * i / (n - 1)));
   }
@@ -509,8 +535,8 @@ static void make_hann(float *w, int n) {
  * @param[out] kmin 최소 bin 인덱스 (DC=0 제외, 최소 1)
  * @param[out] kmax 최대 bin 인덱스 (최대 N/2)
  */
-static void band_to_bins(float fs, int nfft, float f_lo, float f_hi, int *kmin,
-                         int *kmax) {
+static void band_to_bins(float fs, int nfft, float f_lo, float f_hi, int *kmin, int *kmax)
+{
   int a = (int)ceilf(f_lo * nfft / fs);
   int b = (int)floorf(f_hi * nfft / fs);
   if (a < 1)
@@ -546,15 +572,13 @@ static void band_to_bins(float fs, int nfft, float f_lo, float f_hi, int *kmin,
  * @param[out] out_rms_x100 [out] 계산된 RMS 값 (m/s^2 * 100)
  * @param[out] out_peak_x100 [out] 계산된 Peak 값 (m/s^2 * 100)
  */
-static void bandlimited_rms_peak_ms2_x100(const int16_t *lsb, uint16_t n,
-                                          float lsb_to_ms2, float lsb_offset,
-                                          float f_lo, float f_hi,
-                                          int16_t *out_rms_x100,
-                                          int16_t *out_peak_x100) {
+static void bandlimited_rms_peak_ms2_x100(const int16_t *lsb, uint16_t n, float lsb_to_ms2, float lsb_offset, float f_lo, float f_hi, int16_t *out_rms_x100, int16_t *out_peak_x100)
+{
   /* FFT 및 윈도우용 정적 버퍼 (스택 방지) */
   static float re[NFFT], im[NFFT], win[NFFT];
   static bool win_ready = false;
-  if (!win_ready) {
+  if (!win_ready)
+  {
     make_hann(win, NFFT);
     win_ready = true;
   }
@@ -565,21 +589,24 @@ static void bandlimited_rms_peak_ms2_x100(const int16_t *lsb, uint16_t n,
   /* 0) DC(평균) 제거: 보정 오프셋이 설정된 경우에는 별도 평균 제거를 건너뜀 */
   const bool offset_active = (lsb_offset != 0.f);
   float mean_lsb = 0.f;
-  if (!offset_active) {
+  if (!offset_active)
+  {
     for (int i = 0; i < useN; ++i)
       mean_lsb += (float)lsb[i];
     mean_lsb = (useN > 0) ? (mean_lsb / useN) : 0.f;
   }
 
   /* 1) 윈도우 적용 및 제로 패딩 */
-  for (int i = 0; i < useN; ++i) {
+  for (int i = 0; i < useN; ++i)
+  {
     float v = ((float)lsb[i] - lsb_offset - mean_lsb) *
               lsb_to_ms2; // 오프셋/평균 제거 후 스케일링
     float w = win[i];
     re[i] = v * w; /* 창을 평균 제거 후에 곱함 */
     im[i] = 0.f;
   }
-  for (int i = useN; i < NFFT; ++i) {
+  for (int i = useN; i < NFFT; ++i)
+  {
     re[i] = 0.f;
     im[i] = 0.f;
   } /* Zero-padding */
@@ -592,8 +619,10 @@ static void bandlimited_rms_peak_ms2_x100(const int16_t *lsb, uint16_t n,
   band_to_bins(IMU_FS_HZ, NFFT, f_lo, f_hi, &kmin, &kmax);
 
   /* 대역 외(out-of-band) 주파수 제거 (DC, Nyquist 포함) */
-  for (int k = 1; k < NFFT / 2; ++k) {
-    if (k < kmin || k > kmax) {
+  for (int k = 1; k < NFFT / 2; ++k)
+  {
+    if (k < kmin || k > kmax)
+    {
       re[k] = im[k] = 0.f;               /* Positive freq */
       re[NFFT - k] = im[NFFT - k] = 0.f; /* Negative freq (mirror) */
     }
@@ -607,7 +636,8 @@ static void bandlimited_rms_peak_ms2_x100(const int16_t *lsb, uint16_t n,
   /* 5) 시간영역에서 RMS/Peak 계산 (원본 샘플 길이 M=useN 기준) */
   float peak = 0.f, sumsq = 0.f;
   const int M = useN;
-  for (int i = 0; i < M; ++i) {
+  for (int i = 0; i < M; ++i)
+  {
     float a = re[i];
     float au = a > 0 ? a : -a; /* fabsf(a) */
     if (au > peak)
@@ -627,7 +657,8 @@ static int compute_psd_acc_vel_axis(const int16_t *lsb, uint16_t n,
                                     int16_t *acc_rms_x100,
                                     int16_t *acc_peak_x100,
                                     int16_t *vel_rms_mmps_x100,
-                                    int16_t *vel_peak_mmps_x100) {
+                                    int16_t *vel_peak_mmps_x100)
+{
   if (!lsb || n == 0 || !acc_rms_x100 || !acc_peak_x100 || !vel_rms_mmps_x100 ||
       !vel_peak_mmps_x100)
     return -EINVAL;
@@ -638,7 +669,8 @@ static int compute_psd_acc_vel_axis(const int16_t *lsb, uint16_t n,
 
   static float win[PSD_N];
   static bool win_ready = false;
-  if (!win_ready) {
+  if (!win_ready)
+  {
     make_hann(win, PSD_N);
     win_ready = true;
   }
@@ -651,12 +683,14 @@ static int compute_psd_acc_vel_axis(const int16_t *lsb, uint16_t n,
     mean += (((float)lsb[i] - offset_lsb) * lsb_to_ms2);
   mean /= (float)M;
 
-  for (uint16_t i = 0; i < M; ++i) {
+  for (uint16_t i = 0; i < M; ++i)
+  {
     float a = (((float)lsb[i] - offset_lsb) * lsb_to_ms2) - mean;
     re[i] = a * win[i];
     im[i] = 0.f;
   }
-  for (uint16_t i = M; i < NFFT; ++i) {
+  for (uint16_t i = M; i < NFFT; ++i)
+  {
     re[i] = 0.f;
     im[i] = 0.f;
   }
@@ -675,9 +709,11 @@ static int compute_psd_acc_vel_axis(const int16_t *lsb, uint16_t n,
   float acc_rms = 0.f;
   float acc_peak = 0.f;
 
-  if (g_calc_acc) {
+  if (g_calc_acc)
+  {
     float sum_psd_a = 0.f;
-    for (int k = PSD_K_MIN; k <= kmax; ++k) {
+    for (int k = PSD_K_MIN; k <= kmax; ++k)
+    {
       float mag2 = re[k] * re[k] + im[k] * im[k];
       float psd = 2.0f * mag2 / (PSD_HANN_U * IMU_FS_HZ * (float)PSD_N);
       sum_psd_a += psd * df;
@@ -685,12 +721,15 @@ static int compute_psd_acc_vel_axis(const int16_t *lsb, uint16_t n,
     acc_rms = sqrtf(sum_psd_a);
 
     /* Acceleration peak: 대역 외 제거 후 IFFT */
-    for (int k = 0; k <= NFFT / 2; ++k) {
+    for (int k = 0; k <= NFFT / 2; ++k)
+    {
       bool keep = (k >= PSD_K_MIN && k <= kmax);
-      if (!keep) {
+      if (!keep)
+      {
         re[k] = 0.f;
         im[k] = 0.f;
-        if (k > 0 && k < NFFT / 2) {
+        if (k > 0 && k < NFFT / 2)
+        {
           re[NFFT - k] = 0.f;
           im[NFFT - k] = 0.f;
         }
@@ -699,7 +738,8 @@ static int compute_psd_acc_vel_axis(const int16_t *lsb, uint16_t n,
 
     fft_radix2(re, im, 1);
 
-    for (uint16_t i = 0; i < M; ++i) {
+    for (uint16_t i = 0; i < M; ++i)
+    {
       float v = (re[i] >= 0.f) ? re[i] : -re[i];
       if (v > acc_peak)
         acc_peak = v;
@@ -711,14 +751,17 @@ static int compute_psd_acc_vel_axis(const int16_t *lsb, uint16_t n,
   *acc_peak_x100 = g_calc_acc ? MS2_X100(acc_peak) : 0;
 
   /* Velocity spectrum from original X (tmp arrays) */
-  if (g_calc_vel) {
+  if (g_calc_vel)
+  {
     float sum_psd_v = 0.f;
-    for (int k = 0; k < NFFT; ++k) {
+    for (int k = 0; k < NFFT; ++k)
+    {
       re[k] = 0.f;
       im[k] = 0.f;
     }
 
-    for (int k = PSD_K_MIN; k <= kmax; ++k) {
+    for (int k = PSD_K_MIN; k <= kmax; ++k)
+    {
       float freq = (float)k * df;
       float omega = 2.0f * (float)M_PI * freq;
       if (omega <= 0.f)
@@ -734,7 +777,8 @@ static int compute_psd_acc_vel_axis(const int16_t *lsb, uint16_t n,
 
       /* 켤레 대칭 복원 */
       int k_conj = M - k;
-      if (k_conj >= 0 && k_conj < M) {
+      if (k_conj >= 0 && k_conj < M)
+      {
         re[k_conj] = v_re;
         im[k_conj] = -v_im;
       }
@@ -750,7 +794,8 @@ static int compute_psd_acc_vel_axis(const int16_t *lsb, uint16_t n,
     fft_radix2(re, im, 1);
 
     float vel_peak = 0.f;
-    for (uint16_t i = 0; i < M; ++i) {
+    for (uint16_t i = 0; i < M; ++i)
+    {
       float v = (re[i] >= 0.f) ? re[i] : -re[i];
       if (v > vel_peak)
         vel_peak = v;
@@ -759,7 +804,9 @@ static int compute_psd_acc_vel_axis(const int16_t *lsb, uint16_t n,
 
     *vel_rms_mmps_x100 = MMPS_X100(vel_rms);
     *vel_peak_mmps_x100 = MMPS_X100(vel_peak);
-  } else {
+  }
+  else
+  {
     *vel_rms_mmps_x100 = 0;
     *vel_peak_mmps_x100 = 0;
   }
@@ -787,25 +834,29 @@ static int compute_psd_acc_vel_axis(const int16_t *lsb, uint16_t n,
 
 /* TAG 후보 검출 (가속도는 보통 0x01, 환경에 따라 0x02 케이스도 있어 다수결로
  * 선택) */
-static inline uint8_t fifo_tag_value(uint8_t raw_tag) {
+static inline uint8_t fifo_tag_value(uint8_t raw_tag)
+{
   /* 일부 환경에서 TAG가 상위 nibble(0x20 등)에 나타나는 경우가 있어 보정 */
   uint8_t lo = raw_tag & 0x0F;
   uint8_t hi = (raw_tag >> 4) & 0x0F;
   return lo ? lo : hi;
 }
 
-static inline bool is_acc_tag(uint8_t tag, uint8_t acc_tag) {
+static inline bool is_acc_tag(uint8_t tag, uint8_t acc_tag)
+{
   /* 가속도 TAG는 0x01 또는 0x02가 쓰이므로 둘 다 허용 */
   return tag == acc_tag || tag == 0x01 || tag == 0x02;
 }
 
-static uint8_t detect_acc_tag(const uint8_t *buf, size_t len) {
+static uint8_t detect_acc_tag(const uint8_t *buf, size_t len)
+{
   int c1 = 0, c2 = 0;
   /* 더 넓은 구간을 스캔해 다수 TAG를 안정적으로 검출 (최대 512B) */
   size_t probe = MIN(len, (size_t)512);
   if (probe <= FIFO_TAG_OFFSET)
     return 0x01;
-  for (size_t i = 0; i + FIFO_TAG_OFFSET < probe; ++i) {
+  for (size_t i = 0; i + FIFO_TAG_OFFSET < probe; ++i)
+  {
     uint8_t t = fifo_tag_value(buf[i + FIFO_TAG_OFFSET]);
     if (t == 0x01)
       c1++;
@@ -833,13 +884,16 @@ static uint8_t detect_acc_tag(const uint8_t *buf, size_t len) {
 // }
 
 /* 7바이트 간격으로 TAG가 반복되는 시작 오프셋 찾기 (간단 휴리스틱) */
-static size_t find_sync_7B(const uint8_t *buf, size_t len, uint8_t acc_tag) {
+static size_t find_sync_7B(const uint8_t *buf, size_t len, uint8_t acc_tag)
+{
   size_t limit = MIN(len, (size_t)56);
   if (limit <= FIFO_TAG_OFFSET)
     return 0;
-  for (size_t base = 0; base < 7 && base + 14 <= limit; ++base) {
+  for (size_t base = 0; base < 7 && base + 14 <= limit; ++base)
+  {
     size_t ok = 0;
-    for (size_t i = base; i + FIFO_TAG_OFFSET < len; i += FIFO_BYTES_PER_WORD) {
+    for (size_t i = base; i + FIFO_TAG_OFFSET < len; i += FIFO_BYTES_PER_WORD)
+    {
       uint8_t t = fifo_tag_value(buf[i + FIFO_TAG_OFFSET]);
       if (is_acc_tag(t, acc_tag))
         ok++;
@@ -852,7 +906,8 @@ static size_t find_sync_7B(const uint8_t *buf, size_t len, uint8_t acc_tag) {
   return 0;
 }
 
-static void fifo_debug_dump_config(const char *tag) {
+static void fifo_debug_dump_config(const char *tag)
+{
   uint8_t c1 = 0, c3 = 0, c4 = 0, c5 = 0;
   uint8_t who = 0;
 
@@ -868,14 +923,16 @@ static void fifo_debug_dump_config(const char *tag) {
 }
 
 /* 가속도 DRDY + OUTX/Y/Z 한 샘플 디버그 */
-static void lsm6dso_debug_one_sample(const char *tag) {
+static void lsm6dso_debug_one_sample(const char *tag)
+{
   uint8_t st = 0;
   uint8_t buf[6] = {0};
 
   int rc1 = rd_u8(REG_STATUS_REG, &st);
   int rc2 = rd_block(REG_OUTX_L_A, buf, sizeof(buf));
 
-  if (rc1 || rc2) {
+  if (rc1 || rc2)
+  {
     LOG_ERR("DBG_SAMPLE[%s] rd err: st=%d, xyz=%d", tag ? tag : "", rc1, rc2);
     return;
   }
@@ -897,7 +954,7 @@ static void lsm6dso_debug_one_sample(const char *tag) {
  * 사용합니다.
  *
  * 1. FIFO를 BYPASS 모드로 설정합니다.
- * 2. 약 330ms 동안 또는 최대 999개 샘플을 수집할 때까지
+ * 2. 약 160ms 동안 또는 최대 500개 샘플을 수집할 때까지
  * REG_STATUS_REG (0x1E)의 XLDA 비트(BIT 0)를 폴링(polling)합니다.
  * 3. 새 데이터(XLDA=1)가 준비되면 REG_OUTX_L_A (0x28)부터 6바이트를 읽어
  * g_ax, g_ay, g_az 전역 버퍼에 저장합니다.
@@ -914,7 +971,8 @@ static void lsm6dso_debug_one_sample(const char *tag) {
  */
 
 #if 1
-int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale) {
+int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale)
+{
   if (!out)
     return -EINVAL;
   memset(out, 0, sizeof(*out));
@@ -959,7 +1017,7 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale) {
   RC(fifo_expect_ctrl5(NULL, ODR_FIFO_3k33_SH));
   LOG_INF("FIFOcap[0] BYPASS OK, CTRL5=0x48 기대값 일치");
 
-  /* 워터마크 999 word 설정 */
+  /* 워터마크 500 word 설정 */
   RC(wr_u8(REG_FIFO_CTRL1, (uint8_t)(FIFO_WTM_WORDS & 0xFF)));
   RC(wr_u8(REG_FIFO_CTRL2, (uint8_t)((FIFO_WTM_WORDS >> 8) & 0x0F)));
   LOG_INF("FIFOcap[1] WTM=%u words 설정", FIFO_WTM_WORDS);
@@ -977,8 +1035,8 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale) {
 
   /* 여기서부터 센서가 FIFO로 데이터를 밀어넣기 시작해야 함 */
 
-  /* 0.31 s 정도 기다려서 WTM 근처까지 채우기 (N=999 기준) */
-  k_sleep(K_MSEC(310));
+  /* 0.16 s 정도 기다려서 WTM 근처까지 채우기 (N=500 기준) */
+  k_sleep(K_MSEC(160));
 
   /* ------------------------------
    * Stage 3: DIFF_FIFO 확인
@@ -986,10 +1044,12 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale) {
   uint16_t diff_w = 0;
   bool wtm = false;
 
-  for (int tries = 0; tries < 100; ++tries) {
+  for (int tries = 0; tries < 100; ++tries)
+  {
     uint8_t st[2] = {0};
     int rc = rd_block(REG_FIFO_STATUS1, st, sizeof(st));
-    if (rc) {
+    if (rc)
+    {
       LOG_ERR("FIFOcap[4] rd FIFO_STATUS rc=%d", rc);
       return rc;
     }
@@ -1000,7 +1060,7 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale) {
     if (diff_w >= FIFO_WTM_WORDS)
       break;
 
-    /* 아직 999에 못 미치면 2ms씩 더 기다려봄 */
+    /* 아직 500에 못 미치면 2ms씩 더 기다려봄 */
     k_sleep(K_MSEC(2));
   }
 
@@ -1008,7 +1068,8 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale) {
   LOG_INF("FIFOcap[4] DIFF_FIFO=%u words, WTM_REACHED=%d", diff_w,
           out->wtm_reached ? 1 : 0);
 
-  if (diff_w == 0) {
+  if (diff_w == 0)
+  {
     LOG_WRN("FIFOcap: DIFF_FIFO=0, FIFO에 데이터 없음");
 
     /* 추가 디버그: 이 시점 레지스터 재확인 */
@@ -1022,9 +1083,12 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale) {
     uint8_t reg = REG_FIFO_DATA_OUT_TAG;
     int rc_dbg = i2c_write_read(i2c0, LSM6DSO_I2C_ADDR, &reg, 1, fifo_dbg,
                                 sizeof(fifo_dbg));
-    if (rc_dbg) {
+    if (rc_dbg)
+    {
       LOG_ERR("FIFOcap[DBG_FIFO] i2c_write_read rc=%d", rc_dbg);
-    } else {
+    }
+    else
+    {
       LOG_INF("FIFOcap[DBG_FIFO] first 21B: "
               "%02X %02X %02X %02X %02X %02X %02X "
               "%02X %02X %02X %02X %02X %02X %02X "
@@ -1042,9 +1106,11 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale) {
   /* ------------------------------
    * Stage 4: FIFO 단일 버스트 읽기
    * ------------------------------ */
+  /* 여유분까지 읽어서 TAG 불일치로 스킵되는 샘플을 보충 */
   uint16_t words_to_read = diff_w;
-  if (words_to_read > FIFO_WTM_WORDS)
-    words_to_read = FIFO_WTM_WORDS;
+  const uint16_t read_cap = FIFO_WTM_WORDS + 16; /* 9bit 제한(512) 내 여유 */
+  if (words_to_read > read_cap)
+    words_to_read = read_cap;
 
   uint32_t bytes_req =
       (uint32_t)words_to_read * FIFO_BYTES_PER_WORD; /* N word × 7B */
@@ -1054,7 +1120,8 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale) {
   /* 7B 단위 정렬 (혹시라도 잘려서 들어오는 경우 방지) */
   uint16_t bytes_now =
       (uint16_t)(bytes_req - (bytes_req % FIFO_BYTES_PER_WORD));
-  if (bytes_now == 0) {
+  if (bytes_now == 0)
+  {
     LOG_WRN("FIFOcap: bytes_now=0 (정렬 후), DIFF_FIFO=%u", diff_w);
     return -EIO;
   }
@@ -1065,7 +1132,8 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale) {
   uint8_t start_reg = REG_FIFO_DATA_OUT_TAG;
   int rc = i2c_write_read(i2c0, LSM6DSO_I2C_ADDR, &start_reg, 1, g_fifo_raw,
                           bytes_now);
-  if (rc) {
+  if (rc)
+  {
     LOG_ERR("FIFOcap[5] i2c_write_read rc=%d", rc);
     return rc;
   }
@@ -1084,7 +1152,8 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale) {
   LOG_INF("FIFOcap[DBG_PARSE] First 28B:");
   const size_t dbg_bytes = FIFO_BYTES_PER_WORD * 4;
   for (size_t dbg_i = 0; dbg_i < dbg_bytes && dbg_i < bytes_now;
-       dbg_i += FIFO_BYTES_PER_WORD) {
+       dbg_i += FIFO_BYTES_PER_WORD)
+  {
     uint8_t raw_tag = g_fifo_raw[dbg_i + FIFO_TAG_OFFSET];
     LOG_INF("  [%02u] DATA: %02X %02X %02X %02X %02X %02X | TAG=0x%02X(val=%u)",
             (unsigned)(dbg_i / 7), g_fifo_raw[dbg_i], g_fifo_raw[dbg_i + 1],
@@ -1094,12 +1163,14 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale) {
 
   for (size_t i = sync_off;
        i + FIFO_BYTES_PER_WORD <= bytes_now && n < FIFO_WTM_WORDS;
-       i += FIFO_BYTES_PER_WORD) {
+       i += FIFO_BYTES_PER_WORD)
+  {
     uint8_t raw_tag = g_fifo_raw[i + FIFO_TAG_OFFSET];
     uint8_t tag = fifo_tag_value(raw_tag);
 
     /* 디버그: 처음 5개 패킷의 TAG 체크 */
-    if (n < 5) {
+    if (n < 5)
+    {
       LOG_INF("FIFOcap[DBG_TAG] n=%u, i=%u, tag=0x%02X (full=0x%02X), "
               "acc_tag=0x%02X, match=%d",
               n, (unsigned)i, tag, raw_tag, acc_tag,
@@ -1123,10 +1194,10 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale) {
   }
 
   out->n = n;
-  LOG_INF("FIFOcap[7] parsed accel samples: n=%u (목표 N=%u)", n,
-          FIFO_WTM_WORDS);
+  LOG_INF("FIFOcap[7] parsed accel samples: n=%u (목표 N=%u)", n, FIFO_WTM_WORDS);
 
-  if (n == 0) {
+  if (n == 0)
+  {
     LOG_WRN("FIFOcap: 가속도 샘플을 하나도 파싱하지 못함");
     return -EIO;
   }
@@ -1142,17 +1213,20 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale) {
   const bool offset_y_active = (g_cal_offset_lsb[1] != 0.f);
   const bool offset_z_active = (g_cal_offset_lsb[2] != 0.f);
 
-  if (!offset_x_active) {
+  if (!offset_x_active)
+  {
     for (uint16_t i = 0; i < n; ++i)
       mx += (float)g_ax[i];
     mx /= (float)n;
   }
-  if (!offset_y_active) {
+  if (!offset_y_active)
+  {
     for (uint16_t i = 0; i < n; ++i)
       my += (float)g_ay[i];
     my /= (float)n;
   }
-  if (!offset_z_active) {
+  if (!offset_z_active)
+  {
     for (uint16_t i = 0; i < n; ++i)
       mz += (float)g_az[i];
     mz /= (float)n;
@@ -1161,7 +1235,8 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale) {
   float sx = 0.f, sy = 0.f, sz = 0.f;
   float px = 0.f, py = 0.f, pz = 0.f;
 
-  for (uint16_t i = 0; i < n; ++i) {
+  for (uint16_t i = 0; i < n; ++i)
+  {
     float x = ((float)g_ax[i] - g_cal_offset_lsb[0] - mx) * scale_factor;
     float y = ((float)g_ay[i] - g_cal_offset_lsb[1] - my) * scale_factor;
     float z = ((float)g_az[i] - g_cal_offset_lsb[2] - mz) * scale_factor;
@@ -1196,8 +1271,10 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale) {
   /* -------------------------------------------------
    * 3) 10–1000 Hz 대역 제한 RMS/Peak (기존 PSD/필터 함수 활용)
    * ------------------------------------------------- */
-  for (int axis = 0; axis < 3; ++axis) {
-    const int16_t *src = (axis == 0) ? g_ax : (axis == 1) ? g_ay : g_az;
+  for (int axis = 0; axis < 3; ++axis)
+  {
+    const int16_t *src = (axis == 0) ? g_ax : (axis == 1) ? g_ay
+                                                          : g_az;
 
     /* 10–1000 Hz PSD 기반 가속도/속도 계산 */
     compute_psd_acc_vel_axis(
@@ -1210,7 +1287,8 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale) {
 }
 
 #else
-int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale) {
+int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale)
+{
   if (!out)
     return -EINVAL;
   memset(out, 0, sizeof(*out));
@@ -1253,15 +1331,17 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale) {
 
   uint32_t t_start = k_uptime_get_32();
   const uint32_t CAPTURE_TIMEOUT_MS =
-      1000; /* 1초 타임아웃 (0.3s면 충분히 끝나야 함) */
+      1000;                             /* 1초 타임아웃 (0.3s면 충분히 끝나야 함) */
   const uint32_t POLL_INTERVAL_US = 50; /* DRDY 폴링 간격 (50us) */
 
   LOG_INF("DRDYcap: start capture, TARGET_N=%u", TARGET_N);
 
-  while (n < TARGET_N) {
+  while (n < TARGET_N)
+  {
     /* 타임아웃 체크 */
     uint32_t dt = k_uptime_get_32() - t_start;
-    if (dt > CAPTURE_TIMEOUT_MS) {
+    if (dt > CAPTURE_TIMEOUT_MS)
+    {
       LOG_WRN("DRDYcap: timeout, got %u/%u samples (%.1f ms)", n, TARGET_N,
               (float)dt);
       break;
@@ -1270,12 +1350,14 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale) {
     uint8_t status = 0;
     RC(rd_u8(REG_STATUS_REG, &status));
 
-    if (status & XLDA_BIT) {
+    if (status & XLDA_BIT)
+    {
       /* 새 샘플 준비됨 → OUTX_L_A ~ OUTZ_H_A 한 번에 읽기 */
       uint8_t reg = REG_OUTX_L_A;
       int rc =
           i2c_write_read(i2c0, LSM6DSO_I2C_ADDR, &reg, 1, raw, sizeof(raw));
-      if (rc) {
+      if (rc)
+      {
         LOG_ERR("DRDYcap: i2c_write_read rc=%d (n=%u)", rc, n);
         return rc;
       }
@@ -1288,7 +1370,9 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale) {
       g_ay[n] = y;
       g_az[n] = z;
       ++n;
-    } else {
+    }
+    else
+    {
       /* DRDY 아직 안 떴으면 짧게 대기 */
       k_busy_wait(POLL_INTERVAL_US);
     }
@@ -1296,7 +1380,8 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale) {
 
   out->n = n;
 
-  if (n == 0) {
+  if (n == 0)
+  {
     LOG_WRN("DRDYcap: no samples captured");
     return -EIO; /* rc=-5와 동일 계열 에러 */
   }
@@ -1314,17 +1399,20 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale) {
   const bool offset_y_active = (g_cal_offset_lsb[1] != 0.f);
   const bool offset_z_active = (g_cal_offset_lsb[2] != 0.f);
 
-  if (!offset_x_active) {
+  if (!offset_x_active)
+  {
     for (uint16_t i = 0; i < n; ++i)
       mx += (float)g_ax[i];
     mx /= (float)n;
   }
-  if (!offset_y_active) {
+  if (!offset_y_active)
+  {
     for (uint16_t i = 0; i < n; ++i)
       my += (float)g_ay[i];
     my /= (float)n;
   }
-  if (!offset_z_active) {
+  if (!offset_z_active)
+  {
     for (uint16_t i = 0; i < n; ++i)
       mz += (float)g_az[i];
     mz /= (float)n;
@@ -1333,7 +1421,8 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale) {
   float sx = 0.f, sy = 0.f, sz = 0.f;
   float px = 0.f, py = 0.f, pz = 0.f;
 
-  for (uint16_t i = 0; i < n; ++i) {
+  for (uint16_t i = 0; i < n; ++i)
+  {
     float x = ((float)g_ax[i] - g_cal_offset_lsb[0] - mx) * scale_factor;
     float y = ((float)g_ay[i] - g_cal_offset_lsb[1] - my) * scale_factor;
     float z = ((float)g_az[i] - g_cal_offset_lsb[2] - mz) * scale_factor;
@@ -1368,8 +1457,10 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale) {
   /* -------------------------------------------------
    * 3) 10–1000 Hz 대역 제한 RMS/Peak (기존 PSD/필터 함수 활용)
    * ------------------------------------------------- */
-  for (int axis = 0; axis < 3; ++axis) {
-    const int16_t *src = (axis == 0) ? g_ax : (axis == 1) ? g_ay : g_az;
+  for (int axis = 0; axis < 3; ++axis)
+  {
+    const int16_t *src = (axis == 0) ? g_ax : (axis == 1) ? g_ay
+                                                          : g_az;
 
     /* 10–1000 Hz PSD 기반 가속도/속도 계산 */
     compute_psd_acc_vel_axis(
@@ -1382,7 +1473,8 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale) {
 }
 #endif
 
-int lsm6dso_capture_acc_only(lsm6dso_stats_t *out, lsm6dso_scale_t scale) {
+int lsm6dso_capture_acc_only(lsm6dso_stats_t *out, lsm6dso_scale_t scale)
+{
   g_calc_acc = true;
   g_calc_vel = false;
   int rc = lsm6dso_capture_once(out, scale);
@@ -1390,7 +1482,8 @@ int lsm6dso_capture_acc_only(lsm6dso_stats_t *out, lsm6dso_scale_t scale) {
   return rc;
 }
 
-int lsm6dso_capture_vel_only(lsm6dso_stats_t *out, lsm6dso_scale_t scale) {
+int lsm6dso_capture_vel_only(lsm6dso_stats_t *out, lsm6dso_scale_t scale)
+{
   g_calc_acc = false;
   g_calc_vel = true;
   int rc = lsm6dso_capture_once(out, scale);
@@ -1398,7 +1491,8 @@ int lsm6dso_capture_vel_only(lsm6dso_stats_t *out, lsm6dso_scale_t scale) {
   return rc;
 }
 
-int set_calibration_lsm6dso(lsm6dso_scale_t scale) {
+int set_calibration_lsm6dso(lsm6dso_scale_t scale)
+{
   /* 오프셋을 초기화한 상태에서 한 번 캡처하여 DC 바이어스를 저장 */
   g_cal_offset_lsb[0] = g_cal_offset_lsb[1] = g_cal_offset_lsb[2] = 0.f;
 
@@ -1410,7 +1504,8 @@ int set_calibration_lsm6dso(lsm6dso_scale_t scale) {
     return -EIO;
 
   float sx = 0.f, sy = 0.f, sz = 0.f;
-  for (uint16_t i = 0; i < st.n; ++i) {
+  for (uint16_t i = 0; i < st.n; ++i)
+  {
     sx += (float)g_ax[i];
     sy += (float)g_ay[i];
     sz += (float)g_az[i];
@@ -1430,15 +1525,18 @@ int set_calibration_lsm6dso(lsm6dso_scale_t scale) {
   return 0;
 }
 
-void clear_calibration_lsm6dso(void) {
+void clear_calibration_lsm6dso(void)
+{
   g_cal_offset_lsb[0] = g_cal_offset_lsb[1] = g_cal_offset_lsb[2] = 0.f;
   LOG_INF("LSM6DSO calibration cleared");
 }
 
 /* ===== FIFO dump (diagnostic) ===== */
 
-static void dump_hex_lines(const struct shell *sh, const uint8_t *p, size_t n) {
-  for (size_t i = 0; i < n; i += 16) {
+static void dump_hex_lines(const struct shell *sh, const uint8_t *p, size_t n)
+{
+  for (size_t i = 0; i < n; i += 16)
+  {
     char line[16 * 3 + 8];
     size_t k = 0;
     k += snprintk(line + k, sizeof(line) - k, "%04x: ", (uint32_t)i);
@@ -1451,7 +1549,8 @@ static void dump_hex_lines(const struct shell *sh, const uint8_t *p, size_t n) {
 
 /* FIFO 덤프: STOP_ON_WTM|FIFO로 채운 뒤 bytes_req 바이트 버스트 읽기 → RAW+파싱
  * 출력 */
-int lsm6dso_dump_fifo(const struct shell *shell, uint16_t bytes_req) {
+int lsm6dso_dump_fifo(const struct shell *shell, uint16_t bytes_req)
+{
   if (bytes_req == 0)
     bytes_req = 224;             /* 디폴트 224B */
   bytes_req -= (bytes_req % 7u); /* 7의 배수로 정렬 */
@@ -1483,7 +1582,8 @@ int lsm6dso_dump_fifo(const struct shell *shell, uint16_t bytes_req) {
   uint8_t st12[2] = {0};
   RC(i2c_burst_read(i2c0, LSM6DSO_I2C_ADDR, REG_FIFO_STATUS1, st12, 2));
   uint16_t diff_w = ((uint16_t)(st12[1] & 0x0F) << 8) | st12[0];
-  if (diff_w == 0) {
+  if (diff_w == 0)
+  {
     uint8_t c5 = 0, c4 = 0;
     rd_u8(REG_FIFO_CTRL5, &c5);
     rd_u8(REG_FIFO_CTRL4, &c4);
@@ -1492,7 +1592,8 @@ int lsm6dso_dump_fifo(const struct shell *shell, uint16_t bytes_req) {
   }
 
   /* 4) DIFF 상승 대기 */
-  for (int tries = 0; tries < 600; ++tries) { /* 최대 ~600ms */
+  for (int tries = 0; tries < 600; ++tries)
+  { /* 최대 ~600ms */
     uint8_t st[2];
     RC(i2c_burst_read(i2c0, LSM6DSO_I2C_ADDR, REG_FIFO_STATUS1, st, 2));
     diff_w = ((uint16_t)(st[1] & 0x0F) << 8) | st[0];
@@ -1510,7 +1611,8 @@ int lsm6dso_dump_fifo(const struct shell *shell, uint16_t bytes_req) {
   static uint8_t buf[420];
   uint8_t reg = REG_FIFO_DATA_OUT_TAG;
   int rc = i2c_write_read(i2c0, LSM6DSO_I2C_ADDR, &reg, 1, buf, bytes_now);
-  if (rc) {
+  if (rc)
+  {
     shell_print(shell, "dump: i2c rc=%d", rc);
     return rc;
   }
@@ -1529,8 +1631,8 @@ int lsm6dso_dump_fifo(const struct shell *shell, uint16_t bytes_req) {
 
   /* 6) 패킷 파싱(최대 32 패킷) */
   uint16_t shown = 0;
-  for (size_t i = off; i + FIFO_BYTES_PER_WORD <= bytes_now && shown < 32;
-       i += FIFO_BYTES_PER_WORD) {
+  for (size_t i = off; i + FIFO_BYTES_PER_WORD <= bytes_now && shown < 32; i += FIFO_BYTES_PER_WORD)
+  {
     int16_t x = (int16_t)((uint16_t)buf[i + 0] | ((uint16_t)buf[i + 1] << 8));
     int16_t y = (int16_t)((uint16_t)buf[i + 2] | ((uint16_t)buf[i + 3] << 8));
     int16_t z = (int16_t)((uint16_t)buf[i + 4] | ((uint16_t)buf[i + 5] << 8));
