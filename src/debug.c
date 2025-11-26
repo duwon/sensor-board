@@ -388,39 +388,24 @@ static int cmd_imu_init(const struct shell *shell, size_t argc, char **argv)
 
 static int cmd_imu_once(const struct shell *shell, size_t argc, char **argv)
 {
+    /* 허용 형태:
+     *  - diag imu once           -> both, 4g
+     *  - diag imu once 4g/16g    -> both, 지정 FS
+     *  - diag imu once acc|vel [4g|16g]
+     */
     lsm6dso_scale_t scale = LSM6DSO_SCALE_4G;
     bool acc_only = false, vel_only = false;
-    if (argc >= 2)
-    {
-        if (strcmp(argv[1], "16g") == 0)
-        {
-            scale = LSM6DSO_SCALE_16G;
-        }
-        else if (strcmp(argv[1], "4g") == 0)
-        {
-            scale = LSM6DSO_SCALE_4G;
-        }
-        else if (strcmp(argv[1], "acc") == 0)
-        {
-            acc_only = true;
-        }
-        else if (strcmp(argv[1], "vel") == 0)
-        {
-            vel_only = true;
-        }
-        else
-        {
-            shell_error(shell, "usage: diag imu once [4g|16g|acc|vel] [4g|16g]");
-            return -EINVAL;
-        }
-    }
 
-    if ((acc_only || vel_only) && argc >= 3)
+    for (size_t i = 1; i < argc; ++i)
     {
-        if (strcmp(argv[2], "16g") == 0)
-            scale = LSM6DSO_SCALE_16G;
-        else if (strcmp(argv[2], "4g") == 0)
+        if (strcmp(argv[i], "4g") == 0)
             scale = LSM6DSO_SCALE_4G;
+        else if (strcmp(argv[i], "16g") == 0)
+            scale = LSM6DSO_SCALE_16G;
+        else if (strcmp(argv[i], "acc") == 0)
+            acc_only = true, vel_only = false;
+        else if (strcmp(argv[i], "vel") == 0)
+            vel_only = true, acc_only = false;
         else
         {
             shell_error(shell, "usage: diag imu once [acc|vel] [4g|16g]");

@@ -834,8 +834,8 @@ static inline uint8_t fifo_tag_value(uint8_t raw_tag)
 
 static inline bool is_acc_tag(uint8_t tag, uint8_t acc_tag)
 {
-  /* 가속도 TAG는 0x01 또는 0x02가 쓰이므로 둘 다 허용 */
-  return tag == acc_tag || tag == 0x01 || tag == 0x02;
+  /* 감지된 가속도 TAG와 정확히 일치하는 경우에만 인정 */
+  return tag == acc_tag;
 }
 
 static uint8_t detect_acc_tag(const uint8_t *buf, size_t len)
