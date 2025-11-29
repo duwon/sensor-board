@@ -82,9 +82,13 @@ LOG_MODULE_REGISTER(lsm6dso, LOG_LEVEL_INF);
 #define FIFO_TAG_OFFSET 0     /**< FIFO 워드 내 TAG 위치 (첫 바이트) */
 
 /* 캡처 대상 배열 (BSS) */
-static int16_t g_ax[FIFO_WTM_WORDS]; /**< X축 가속도 LSB 데이터 버퍼 */
-static int16_t g_ay[FIFO_WTM_WORDS]; /**< Y축 가속도 LSB 데이터 버퍼 */
-static int16_t g_az[FIFO_WTM_WORDS]; /**< Z축 가속도 LSB 데이터 버퍼 */
+#ifndef FIFO_CAPTURE_REPEAT
+#define FIFO_CAPTURE_REPEAT 2 /**< FIFO 캡처 반복 횟수 (총 1000 샘플 목표) */
+#define FIFO_TOTAL_WORDS (FIFO_WTM_WORDS * FIFO_CAPTURE_REPEAT)
+#endif
+static int16_t g_ax[FIFO_TOTAL_WORDS]; /**< X축 가속도 LSB 데이터 버퍼 */
+static int16_t g_ay[FIFO_TOTAL_WORDS]; /**< Y축 가속도 LSB 데이터 버퍼 */
+static int16_t g_az[FIFO_TOTAL_WORDS]; /**< Z축 가속도 LSB 데이터 버퍼 */
 
 /* FIFO RAW 버퍼: XYZ+TAG 순서 그대로 받아두는 용도
  * 목표 샘플(FIFO_WTM_WORDS)보다 약간 큰 여유(FIFO_SLACK_WORDS)를 두어 다른 TAG 패킷이 섞여도 목표 갯수를 확보 */
@@ -163,7 +167,6 @@ static const struct device *i2c0 = DEVICE_DT_GET(DT_NODELABEL(i2c0)); /**< I2C0 
 #define G_CONST_MS2 9.80665f
 #define MMPS_X100(v_mps) ((int16_t)((v_mps * 100000.0f) + ((v_mps >= 0.f) ? 0.5f : -0.5f)))
 #define MS2_X100(v_ms2) ((int16_t)((v_ms2 * 100.0f) + ((v_ms2 >= 0.f) ? 0.5f : -0.5f)))
-
 /* REG_CTRL2_G: Gyroscope */
 #define ODR_G_POWER_DOWN (0x0 << 4) /**< 자이로스코프 파워 다운 */
 
@@ -834,8 +837,8 @@ static inline uint8_t fifo_tag_value(uint8_t raw_tag)
 
 static inline bool is_acc_tag(uint8_t tag, uint8_t acc_tag)
 {
-  /* 가속도 TAG는 0x01/0x02 두 종류가 관측되므로 둘 다 허용, 기타는 제외 */
-  return tag == acc_tag || tag == 0x01 || tag == 0x02;
+  /* ? ????? ??? TAG? 0x01/0x02 ?? 0x04/0x07? ???? ?? ?? */
+  return tag == acc_tag || tag == 0x01 || tag == 0x02 || tag == 0x04 || tag == 0x07;
 }
 
 static uint8_t detect_acc_tag(const uint8_t *buf, size_t len)
@@ -948,236 +951,199 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale)
   const bool use_16g = (lsm6dso_scale == LSM6DSO_SCALE_16G);
   const float lsb_to_ms2 = use_16g ? SENS_LSB_TO_MS2_16G : SENS_LSB_TO_MS2_4G;
 
-  /* ------------------------------
-   * Stage -1: 현재 레지스터 상태 확인
-   * ------------------------------ */
   fifo_debug_dump_config("DBG0_BEFORE");
   lsm6dso_debug_one_sample("BEFORE_CAP");
-  /* WHO_AM_I 캐시 */
   rd_u8(REG_WHO_AM_I, &out->whoami);
 
-  /* ------------------------------
-   * Stage 0: 가속도 ODR + FIFO BDR 강제 재설정
-   * ------------------------------ */
-  /* 3.33 kHz, ±4g 로 다시 한 번 명시적으로 세팅
-  RC(lsm6dso_set_fs(lsm6dso_scale)); /* ODR=3.33kHz 유지, FS만 변경 */
-  RC(lsm6dso_apply_fifo_base());     /* BDR/WTM/STOP_ON_WTM=0 재확인 */
+  RC(lsm6dso_set_fs(lsm6dso_scale));
+  RC(lsm6dso_apply_fifo_base());
 
-  /* ------------------------------
-   * Stage 1: FIFO 리셋 (BYPASS)
-   * ------------------------------ */
-  LOG_INF("FIFOcap[0] reset: BYPASS 진입");
+  uint16_t total_n = 0;
+  bool wtm_any = false;
 
-  RC(fifo_set_mode(FIFO_MODE_BYPASS));
-  k_sleep(K_MSEC(2));
-
-  /* BYPASS 모드(0x00) + ODR 3.33k(0x48) = 0x48이어야 정상 */
-  RC(fifo_expect_ctrl5(NULL, ODR_FIFO_3k33_SH));
-  LOG_INF("FIFOcap[0] BYPASS OK, CTRL5=0x48 기대값 일치");
-
-  /* 워터마크 500 word 설정 */
-  RC(wr_u8(REG_FIFO_CTRL1, (uint8_t)(FIFO_WTM_WORDS & 0xFF)));
-  RC(wr_u8(REG_FIFO_CTRL2, (uint8_t)((FIFO_WTM_WORDS >> 8) & 0x0F)));
-  LOG_INF("FIFOcap[1] WTM=%u words 설정", FIFO_WTM_WORDS);
-
-  /* STOP_ON_WTM=1: WTM 도달 시 정지 (덮어쓰기 방지) */
-  RC(wr_u8(REG_FIFO_CTRL4, STOP_ON_WTM_BIT));
-  LOG_INF("FIFOcap[2] STOP_ON_WTM=1 설정 (overwrite 방지)");
-
-  /* ------------------------------
-   * Stage 2: FIFO 모드 진입
-   * ------------------------------ */
-  RC(fifo_set_mode(FIFO_MODE_FIFO));
-  RC(fifo_expect_ctrl5(NULL, ODR_FIFO_3k33_SH));
-  LOG_INF("FIFOcap[3] FIFO_MODE=FIFO 진입 (ODR_FIFO=3.33k)");
-
-  /* 여기서부터 센서가 FIFO로 데이터를 밀어넣기 시작해야 함 */
-
-  /* 0.16 s 정도 기다려서 WTM 근처까지 채우기 (N=500 기준) */
-  k_sleep(K_MSEC(160));
-
-  /* ------------------------------
-   * Stage 3: DIFF_FIFO 확인
-   * ------------------------------ */
-  uint16_t diff_w = 0;
-  bool wtm = false;
-
-  for (int tries = 0; tries < 100; ++tries)
+  for (int rep = 0; rep < FIFO_CAPTURE_REPEAT && total_n < FIFO_TOTAL_WORDS; ++rep)
   {
-    uint8_t st[2] = {0};
-    int rc = rd_block(REG_FIFO_STATUS1, st, sizeof(st));
+    LOG_INF("FIFOcap[%d] reset: BYPASS ??", rep);
+
+    RC(fifo_set_mode(FIFO_MODE_BYPASS));
+    k_sleep(K_MSEC(2));
+
+    RC(fifo_expect_ctrl5(NULL, ODR_FIFO_3k33_SH));
+    LOG_INF("FIFOcap[%d] BYPASS OK, CTRL5=0x48 ??? ??", rep);
+
+    RC(wr_u8(REG_FIFO_CTRL1, (uint8_t)(FIFO_WTM_WORDS & 0xFF)));
+    RC(wr_u8(REG_FIFO_CTRL2, (uint8_t)((FIFO_WTM_WORDS >> 8) & 0x0F)));
+    LOG_INF("FIFOcap[%d] WTM=%u words ??", rep, FIFO_WTM_WORDS);
+
+    RC(wr_u8(REG_FIFO_CTRL4, STOP_ON_WTM_BIT));
+    LOG_INF("FIFOcap[%d] STOP_ON_WTM=1 ?? (overwrite ??)", rep);
+
+    RC(fifo_set_mode(FIFO_MODE_FIFO));
+    RC(fifo_expect_ctrl5(NULL, ODR_FIFO_3k33_SH));
+    LOG_INF("FIFOcap[%d] FIFO_MODE=FIFO ?? (ODR_FIFO=3.33k)", rep);
+
+    k_sleep(K_MSEC(160));
+
+    uint16_t diff_w = 0;
+    bool wtm = false;
+    for (int tries = 0; tries < 100; ++tries)
+    {
+      uint8_t st[2] = {0};
+      int rc = rd_block(REG_FIFO_STATUS1, st, sizeof(st));
+      if (rc)
+      {
+        LOG_ERR("FIFOcap[%d] rd FIFO_STATUS rc=%d", rep, rc);
+        return rc;
+      }
+
+      diff_w = (uint16_t)(((uint16_t)(st[1] & 0x0F) << 8) | st[0]);
+      wtm = (st[1] & BIT(7)) != 0;
+
+      if (diff_w >= FIFO_WTM_WORDS)
+        break;
+
+      k_sleep(K_MSEC(2));
+    }
+
+    bool wtm_reached_now = (diff_w >= FIFO_WTM_WORDS) || wtm;
+    wtm_any |= wtm_reached_now;
+    LOG_INF("FIFOcap[%d] DIFF_FIFO=%u words, WTM_REACHED=%d (?? ANY=%d)",
+            rep, diff_w, wtm_reached_now ? 1 : 0, wtm_any ? 1 : 0);
+
+    if (diff_w == 0)
+    {
+      LOG_WRN("FIFOcap[%d]: DIFF_FIFO=0, FIFO empty", rep);
+      fifo_debug_dump_config("DBG2_DIFF0");
+      lsm6dso_debug_one_sample("AFTER_DIFF0");
+
+      uint8_t fifo_dbg[21] = {0};
+      uint8_t reg = REG_FIFO_DATA_OUT_TAG;
+      int rc_dbg = i2c_write_read(i2c0, LSM6DSO_I2C_ADDR, &reg, 1, fifo_dbg, sizeof(fifo_dbg));
+      if (rc_dbg)
+      {
+        LOG_ERR("FIFOcap[DBG_FIFO] i2c_write_read rc=%d", rc_dbg);
+      }
+      else
+      {
+        LOG_INF("FIFOcap[DBG_FIFO] first 21B: "
+                "%02X %02X %02X %02X %02X %02X %02X "
+                "%02X %02X %02X %02X %02X %02X %02X "
+                "%02X %02X %02X %02X %02X %02X %02X",
+                fifo_dbg[0], fifo_dbg[1], fifo_dbg[2], fifo_dbg[3], fifo_dbg[4],
+                fifo_dbg[5], fifo_dbg[6], fifo_dbg[7], fifo_dbg[8], fifo_dbg[9],
+                fifo_dbg[10], fifo_dbg[11], fifo_dbg[12], fifo_dbg[13],
+                fifo_dbg[14], fifo_dbg[15], fifo_dbg[16], fifo_dbg[17],
+                fifo_dbg[18], fifo_dbg[19], fifo_dbg[20]);
+      }
+      continue;
+    }
+
+    uint16_t words_to_read = diff_w;
+    /* 더 많은 accel을 확보하기 위해 한 번에 최대 FIFO_TOTAL_WORDS까지 읽도록 허용 */
+    if (words_to_read > FIFO_TOTAL_WORDS)
+      words_to_read = FIFO_TOTAL_WORDS;
+
+    uint32_t bytes_req = (uint32_t)words_to_read * FIFO_BYTES_PER_WORD;
+    if (bytes_req > sizeof(g_fifo_raw))
+      bytes_req = sizeof(g_fifo_raw);
+
+    uint16_t bytes_now = (uint16_t)(bytes_req - (bytes_req % FIFO_BYTES_PER_WORD));
+    if (bytes_now == 0)
+    {
+      LOG_WRN("FIFOcap[%d]: bytes_now=0 (DIFF_FIFO=%u)", rep, diff_w);
+      continue;
+    }
+
+    LOG_INF("FIFOcap[%d] FIFO burst read: words=%u, bytes=%u",
+            rep, (bytes_now / FIFO_BYTES_PER_WORD), bytes_now);
+
+    uint8_t start_reg = REG_FIFO_DATA_OUT_TAG;
+    int rc = i2c_write_read(i2c0, LSM6DSO_I2C_ADDR, &start_reg, 1, g_fifo_raw, bytes_now);
     if (rc)
     {
-      LOG_ERR("FIFOcap[4] rd FIFO_STATUS rc=%d", rc);
+      LOG_ERR("FIFOcap[%d] i2c_write_read rc=%d", rep, rc);
       return rc;
     }
 
-    diff_w = (uint16_t)(((uint16_t)(st[1] & 0x0F) << 8) | st[0]);
-    wtm = (st[1] & BIT(7)) != 0;
+    uint8_t acc_tag = detect_acc_tag(g_fifo_raw, bytes_now);
+    size_t sync_off = find_sync_7B(g_fifo_raw, bytes_now, acc_tag);
+    LOG_INF("FIFOcap[%d] acc_tag=0x%02X, sync_off=%u", rep, acc_tag, (unsigned)sync_off);
 
-    if (diff_w >= FIFO_WTM_WORDS)
-      break;
+    uint16_t n = 0;
+    uint16_t pkt_total = 0;
+    uint16_t pkt_skipped = 0;
+    uint16_t tag_hist[16] = {0};
 
-    /* 아직 500에 못 미치면 2ms씩 더 기다려봄 */
-    k_sleep(K_MSEC(2));
-  }
-
-  out->wtm_reached = (diff_w >= FIFO_WTM_WORDS) || wtm;
-  LOG_INF("FIFOcap[4] DIFF_FIFO=%u words, WTM_REACHED=%d", diff_w,
-          out->wtm_reached ? 1 : 0);
-
-  if (diff_w == 0)
-  {
-    LOG_WRN("FIFOcap: DIFF_FIFO=0, FIFO에 데이터 없음");
-
-    /* 추가 디버그: 이 시점 레지스터 재확인 */
-    fifo_debug_dump_config("DBG2_DIFF0");
-
-    /* 1) XL이 실제로 도는지 확인 */
-    lsm6dso_debug_one_sample("AFTER_DIFF0");
-
-    /* 2) DIFF_FIFO가 0이어도 FIFO_DATA_OUT_TAG에서 뭔가 나오는지 확인 */
-    uint8_t fifo_dbg[21] = {0}; /* TAG+XYZ 3세트(3*7) */
-    uint8_t reg = REG_FIFO_DATA_OUT_TAG;
-    int rc_dbg = i2c_write_read(i2c0, LSM6DSO_I2C_ADDR, &reg, 1, fifo_dbg,
-                                sizeof(fifo_dbg));
-    if (rc_dbg)
+    LOG_INF("FIFOcap[DBG_PARSE] First 28B:");
+    const size_t dbg_bytes = FIFO_BYTES_PER_WORD * 4;
+    for (size_t dbg_i = 0; dbg_i < dbg_bytes && dbg_i < bytes_now;
+         dbg_i += FIFO_BYTES_PER_WORD)
     {
-      LOG_ERR("FIFOcap[DBG_FIFO] i2c_write_read rc=%d", rc_dbg);
-    }
-    else
-    {
-      LOG_INF("FIFOcap[DBG_FIFO] first 21B: "
-              "%02X %02X %02X %02X %02X %02X %02X "
-              "%02X %02X %02X %02X %02X %02X %02X "
-              "%02X %02X %02X %02X %02X %02X %02X",
-              fifo_dbg[0], fifo_dbg[1], fifo_dbg[2], fifo_dbg[3], fifo_dbg[4],
-              fifo_dbg[5], fifo_dbg[6], fifo_dbg[7], fifo_dbg[8], fifo_dbg[9],
-              fifo_dbg[10], fifo_dbg[11], fifo_dbg[12], fifo_dbg[13],
-              fifo_dbg[14], fifo_dbg[15], fifo_dbg[16], fifo_dbg[17],
-              fifo_dbg[18], fifo_dbg[19], fifo_dbg[20]);
+      uint8_t raw_tag = g_fifo_raw[dbg_i + FIFO_TAG_OFFSET];
+      LOG_INF("  [%02u] TAG=0x%02X(val=%u) DATA: %02X %02X %02X %02X %02X %02X",
+              (unsigned)(dbg_i / 7), raw_tag, fifo_tag_value(raw_tag),
+              g_fifo_raw[dbg_i + 1], g_fifo_raw[dbg_i + 2], g_fifo_raw[dbg_i + 3],
+              g_fifo_raw[dbg_i + 4], g_fifo_raw[dbg_i + 5], g_fifo_raw[dbg_i + 6]);
     }
 
-    return -EIO; /* rc=-5 */
+    uint16_t base_idx = total_n;
+    for (size_t i = sync_off;
+         i + FIFO_BYTES_PER_WORD <= bytes_now &&
+         (base_idx + n) < FIFO_TOTAL_WORDS;
+         i += FIFO_BYTES_PER_WORD)
+    {
+      uint8_t raw_tag = g_fifo_raw[i + FIFO_TAG_OFFSET];
+      uint8_t tag = fifo_tag_value(raw_tag);
+      if (tag < ARRAY_SIZE(tag_hist))
+        tag_hist[tag]++;
+      pkt_total++;
+
+      if (n < 5)
+      {
+        LOG_INF("FIFOcap[DBG_TAG] rep=%d n=%u, i=%u, tag=0x%02X (full=0x%02X), acc_tag=0x%02X, match=%d",
+                rep, n, (unsigned)i, tag, raw_tag, acc_tag, (tag == acc_tag) ? 1 : 0);
+      }
+
+      if (!is_acc_tag(tag, acc_tag))
+      {
+        pkt_skipped++;
+        continue;
+      }
+
+      int16_t x = (int16_t)((uint16_t)g_fifo_raw[i + 1] | ((uint16_t)g_fifo_raw[i + 2] << 8));
+      int16_t y = (int16_t)((uint16_t)g_fifo_raw[i + 3] | ((uint16_t)g_fifo_raw[i + 4] << 8));
+      int16_t z = (int16_t)((uint16_t)g_fifo_raw[i + 5] | ((uint16_t)g_fifo_raw[i + 6] << 8));
+
+      g_ax[base_idx + n] = x;
+      g_ay[base_idx + n] = y;
+      g_az[base_idx + n] = z;
+      ++n;
+    }
+
+    total_n += n;
+    LOG_INF("FIFOcap[%d] parsed accel samples: n=%u (per-run ??=%u, ??=%u)",
+            rep, n, FIFO_WTM_WORDS, total_n);
+    LOG_INF("FIFOcap[%d] pkt_total=%u, pkt_skipped(non-acc)=%u, tag_hist: 0x0=%u 0x1=%u 0x2=%u 0xF=%u",
+            rep, pkt_total, pkt_skipped, tag_hist[0], tag_hist[1], tag_hist[2], tag_hist[0xF]);
+
+    if (n == 0)
+    {
+      LOG_WRN("FIFOcap: rep %d parsed 0 accel samples", rep);
+      continue;
+    }
   }
 
-  /* ------------------------------
-   * Stage 4: FIFO 단일 버스트 읽기
-   * ------------------------------ */
-  /* STOP_ON_WTM=1 환경: 워터마크까지만 읽음 */
-  uint16_t words_to_read = diff_w;
-  if (words_to_read > FIFO_WTM_WORDS)
-    words_to_read = FIFO_WTM_WORDS;
-
-  uint32_t bytes_req =
-      (uint32_t)words_to_read * FIFO_BYTES_PER_WORD; /* N word × 7B */
-  if (bytes_req > sizeof(g_fifo_raw))
-    bytes_req = sizeof(g_fifo_raw);
-
-  /* 7B 단위 정렬 (혹시라도 잘려서 들어오는 경우 방지) */
-  uint16_t bytes_now =
-      (uint16_t)(bytes_req - (bytes_req % FIFO_BYTES_PER_WORD));
-  if (bytes_now == 0)
+  out->n = total_n;
+  out->wtm_reached = wtm_any;
+  if (total_n == 0)
   {
-    LOG_WRN("FIFOcap: bytes_now=0 (정렬 후), DIFF_FIFO=%u", diff_w);
+    LOG_WRN("FIFOcap: ??? ??? ??? ???? ?? (total)");
     return -EIO;
   }
 
-  LOG_INF("FIFOcap[5] FIFO burst read: words=%u, bytes=%u",
-          (bytes_now / FIFO_BYTES_PER_WORD), bytes_now);
-
-  uint8_t start_reg = REG_FIFO_DATA_OUT_TAG;
-  int rc = i2c_write_read(i2c0, LSM6DSO_I2C_ADDR, &start_reg, 1, g_fifo_raw,
-                          bytes_now);
-  if (rc)
-  {
-    LOG_ERR("FIFOcap[5] i2c_write_read rc=%d", rc);
-    return rc;
-  }
-
-  /* ------------------------------
-   * Stage 5: TAG+XYZ 파싱해서 g_ax/g_ay/g_az 채우기
-   * ------------------------------ */
-  uint8_t acc_tag = detect_acc_tag(g_fifo_raw, bytes_now);
-  size_t sync_off = find_sync_7B(g_fifo_raw, bytes_now, acc_tag);
-  LOG_INF("FIFOcap[6] acc_tag=0x%02X, sync_off=%u", acc_tag,
-          (unsigned)sync_off);
-
-  uint16_t n = 0;
-  uint16_t pkt_total = 0;
-  uint16_t pkt_skipped = 0;
-  uint16_t tag_hist[16] = {0};
-
-  /* 디버그: 첫 28바이트(4패킷) 확인 */
-  LOG_INF("FIFOcap[DBG_PARSE] First 28B:");
-  const size_t dbg_bytes = FIFO_BYTES_PER_WORD * 4;
-  for (size_t dbg_i = 0; dbg_i < dbg_bytes && dbg_i < bytes_now;
-       dbg_i += FIFO_BYTES_PER_WORD)
-  {
-    uint8_t raw_tag = g_fifo_raw[dbg_i + FIFO_TAG_OFFSET];
-    LOG_INF("  [%02u] TAG=0x%02X(val=%u) DATA: %02X %02X %02X %02X %02X %02X",
-            (unsigned)(dbg_i / 7), raw_tag, fifo_tag_value(raw_tag),
-            g_fifo_raw[dbg_i + 1], g_fifo_raw[dbg_i + 2], g_fifo_raw[dbg_i + 3],
-            g_fifo_raw[dbg_i + 4], g_fifo_raw[dbg_i + 5], g_fifo_raw[dbg_i + 6]);
-  }
-
-  for (size_t i = sync_off;
-       i + FIFO_BYTES_PER_WORD <= bytes_now && n < FIFO_WTM_WORDS;
-       i += FIFO_BYTES_PER_WORD)
-  {
-    uint8_t raw_tag = g_fifo_raw[i + FIFO_TAG_OFFSET];
-    uint8_t tag = fifo_tag_value(raw_tag);
-    if (tag < ARRAY_SIZE(tag_hist))
-      tag_hist[tag]++;
-    pkt_total++;
-
-    /* 디버그: 처음 5개 패킷의 TAG 체크 */
-    if (n < 5)
-    {
-      LOG_INF("FIFOcap[DBG_TAG] n=%u, i=%u, tag=0x%02X (full=0x%02X), "
-              "acc_tag=0x%02X, match=%d",
-              n, (unsigned)i, tag, raw_tag, acc_tag,
-              (tag == acc_tag) ? 1 : 0);
-    }
-
-    if (!is_acc_tag(tag, acc_tag))
-    {
-      pkt_skipped++;
-      continue; /* 다른 TAG는 건너뛰고 다음 패킷 확인 */
-    }
-
-    int16_t x = (int16_t)((uint16_t)g_fifo_raw[i + 1] |
-                          ((uint16_t)g_fifo_raw[i + 2] << 8));
-    int16_t y = (int16_t)((uint16_t)g_fifo_raw[i + 3] |
-                          ((uint16_t)g_fifo_raw[i + 4] << 8));
-    int16_t z = (int16_t)((uint16_t)g_fifo_raw[i + 5] |
-                          ((uint16_t)g_fifo_raw[i + 6] << 8));
-
-    g_ax[n] = x;
-    g_ay[n] = y;
-    g_az[n] = z;
-    ++n;
-  }
-
-  out->n = n;
-  LOG_INF("FIFOcap[7] parsed accel samples: n=%u (목표 N=%u)", n, FIFO_WTM_WORDS);
-  LOG_INF("FIFOcap[7] pkt_total=%u, pkt_skipped(non-acc)=%u, tag_hist: "
-          "0x0=%u 0x1=%u 0x2=%u 0xF=%u",
-          pkt_total, pkt_skipped, tag_hist[0], tag_hist[1], tag_hist[2],
-          tag_hist[0xF]);
-
-  if (n == 0)
-  {
-    LOG_WRN("FIFOcap: 가속도 샘플을 하나도 파싱하지 못함");
-    return -EIO;
-  }
-
-  /* ------------------------------
-   * Stage 6: DC 제거 + 전체 대역 RMS/Peak 계산
-   * ------------------------------ */
   const float scale_factor = lsb_to_ms2;
+  const uint16_t n = total_n;
 
-  /* 축별 평균 (DC 컴포넌트) 계산 */
   float mx = 0.f, my = 0.f, mz = 0.f;
   const bool offset_x_active = (g_cal_offset_lsb[0] != 0.f);
   const bool offset_y_active = (g_cal_offset_lsb[1] != 0.f);
@@ -1238,15 +1204,10 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale)
   out->rms_ms2_x100[1] = (int16_t)(ry * 100.f + 0.5f);
   out->rms_ms2_x100[2] = (int16_t)(rz * 100.f + 0.5f);
 
-  /* -------------------------------------------------
-   * 3) 10–1000 Hz 대역 제한 RMS/Peak (기존 PSD/필터 함수 활용)
-   * ------------------------------------------------- */
   for (int axis = 0; axis < 3; ++axis)
   {
-    const int16_t *src = (axis == 0) ? g_ax : (axis == 1) ? g_ay
-                                                          : g_az;
+    const int16_t *src = (axis == 0) ? g_ax : (axis == 1) ? g_ay : g_az;
 
-    /* 10–1000 Hz PSD 기반 가속도/속도 계산 */
     compute_psd_acc_vel_axis(
         src, n, lsb_to_ms2, g_cal_offset_lsb[axis], &out->bl_rms_ms2_x100[axis],
         &out->bl_peak_ms2_x100[axis], &out->bl_rms_mmps_x100[axis],
