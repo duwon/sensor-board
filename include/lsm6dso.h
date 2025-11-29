@@ -1,7 +1,7 @@
 /*
  * lsm6dso.h
  *
- * LSM6DSO 6축 IMU 센서 드라이버 (FIFO 및 진동 처리 특화)
+ * LSM6DSO 6축 IMU 센서 드라이버 (ISO 2954:2012 / 1024샘플 규격 반영)
  */
 #pragma once
 #include <zephyr/kernel.h>
@@ -13,16 +13,14 @@ extern "C"
 {
 #endif
 
-    /* FIFO 진단용 버스트 덤프 (RAW + 파싱 출력) */
+    /* FIFO 진단용 버스트 덤프 */
     struct shell;
-    int lsm6dso_dump_fifo(const struct shell *shell, uint16_t bytes_req);
-
 
     typedef struct
     {
-        uint16_t n; /* 수집된 샘플 수 */
+        uint16_t n; /* 수집된 샘플 수 (목표: 1024) */
 
-        /* 전체대역 통계 (m/s^2 ×100 고정소수) */
+        /* 전체대역 통계 (m/s^2 ×100) */
         int16_t peak_ms2_x100[3];
         int16_t rms_ms2_x100[3];
 
@@ -45,13 +43,13 @@ extern "C"
         LSM6DSO_SCALE_16G = 16,
     } lsm6dso_scale_t;
 
-    /* 초기화(ODR=3.33kHz, FS=±4g, Gyro OFF, FIFO=Continuous로 세팅) */
+    /* 초기화(ODR=3.33kHz, FS=±4g, FIFO=Continuous, WTM=512) */
     int lsm6dso_init(void);
 
-    /* 0.33s 동안 DRDY 폴링으로 직접 캡처 + 통계 계산 */
+    /* Active Polling으로 1024샘플(512x2) 캡처 후 통계 계산 */
     int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t scale);
-    int lsm6dso_capture_acc_only(lsm6dso_stats_t *out, lsm6dso_scale_t scale); /* 저전력: 가속도만 */
-    int lsm6dso_capture_vel_only(lsm6dso_stats_t *out, lsm6dso_scale_t scale); /* 저전력: 속도만 */
+    int lsm6dso_capture_acc_only(lsm6dso_stats_t *out, lsm6dso_scale_t scale);
+    int lsm6dso_capture_vel_only(lsm6dso_stats_t *out, lsm6dso_scale_t scale);
 
     typedef struct
     {
@@ -71,7 +69,7 @@ extern "C"
     int set_calibration_lsm6dso(lsm6dso_scale_t scale);
     void clear_calibration_lsm6dso(void);
 
-    /* 레지스터 덤프(옵션): 쉘에서 상태 확인용 */
+    /* 레지스터 덤프 */
     struct shell;
     int lsm6dso_dump_regs(const struct shell *shell);
 
