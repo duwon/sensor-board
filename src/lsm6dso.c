@@ -33,6 +33,36 @@ LOG_MODULE_REGISTER(lsm6dso, LOG_LEVEL_INF);
       return __rc;     \
   } while (0)
 
+
+#define PRINT_TIMING false
+
+/**
+ * @brief 현재 시간(밀리초) 반환
+ * 
+ * @return uint32_t 
+ */
+static inline uint32_t now_ms(void)
+{
+  return k_uptime_get_32();
+}
+
+/**
+ * @brief 로그 타이밍 출력
+ * 
+ * @param tag :태그 문자열
+ * @param t_start :시작 시점
+ * @param t_prev :이전 시점
+ */
+static inline void log_timing(const char *tag, uint32_t t_start, uint32_t *t_prev)
+{
+  if (!PRINT_TIMING)
+    return;
+
+  uint32_t t_now = now_ms();
+  LOG_INF("[TIMING] %s: +%u ms (total %u ms)", tag, (unsigned)(t_now - *t_prev), (unsigned)(t_now - t_start));
+  *t_prev = t_now;
+}
+
 /* --- 1. 기본 설정 및 상수 (PDF 2~4페이지 참조) --- */
 
 /* FIFO 설정: 512 워드 단위로 2회 읽기 = 총 1024 샘플  */
@@ -289,6 +319,9 @@ static int compute_psd_acc_vel_axis(const int16_t *lsb, uint16_t n,
   if (n != PSD_N)
     return -EINVAL; // Must be 1024
 
+  uint32_t t_start = now_ms();
+  uint32_t t_prev = t_start;
+
   static float win[PSD_N];
   static bool win_ready = false;
   if (!win_ready)
@@ -312,8 +345,12 @@ static int compute_psd_acc_vel_axis(const int16_t *lsb, uint16_t n,
     im[i] = 0.f;
   }
 
+  log_timing("PSD axis: mean/window", t_start, &t_prev);
+
   /* 2. FFT 수행 */
   fft_radix2(re, im, 0);
+
+  log_timing("PSD axis: FFT forward", t_start, &t_prev);
 
   /* 속도 계산을 위해 원본 스펙트럼(대역제한 전) 복사 */
   memcpy(vre, re, sizeof(float) * NFFT);
@@ -347,6 +384,8 @@ static int compute_psd_acc_vel_axis(const int16_t *lsb, uint16_t n,
   }
   float acc_rms = sqrtf(sum_psd_a);
 
+  log_timing("PSD axis: accel PSD integrate", t_start, &t_prev);
+
   /* 4. 가속도 Peak (Inverse FFT) */
   float acc_peak = 0.f;
   if (g_calc_acc)
@@ -360,6 +399,8 @@ static int compute_psd_acc_vel_axis(const int16_t *lsb, uint16_t n,
     }
     acc_peak /= PSD_HANN_CG; // divide by 0.5
   }
+
+  log_timing("PSD axis: accel peak IFFT", t_start, &t_prev);
 
   *acc_rms_x100 = MS2_X100(acc_rms);
   *acc_peak_x100 = MS2_X100(acc_peak);
@@ -396,6 +437,8 @@ static int compute_psd_acc_vel_axis(const int16_t *lsb, uint16_t n,
   }
   float vel_rms = sqrtf(sum_psd_v); // m/s
 
+  log_timing("PSD axis: velocity PSD", t_start, &t_prev);
+
   /* 6. 속도 Peak (Inverse FFT) */
   float vel_peak = 0.f;
   if (g_calc_vel)
@@ -409,6 +452,8 @@ static int compute_psd_acc_vel_axis(const int16_t *lsb, uint16_t n,
     }
     vel_peak /= PSD_HANN_CG; // divide by 0.5
   }
+
+  log_timing("PSD axis: velocity peak IFFT", t_start, &t_prev);
 
   *vel_rms_mmps_x100 = MMPS_X100(vel_rms);
   *vel_peak_mmps_x100 = MMPS_X100(vel_peak);
@@ -442,20 +487,28 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale)
     return -EINVAL;
   memset(out, 0, sizeof(*out));
 
+  uint32_t t_start = now_ms();
+  uint32_t t_prev = t_start;
+
   const bool use_16g = (lsm6dso_scale == LSM6DSO_SCALE_16G);
   const float lsb_to_ms2 = use_16g ? SENS_LSB_TO_MS2_16G : SENS_LSB_TO_MS2_4G;
 
   rd_u8(REG_WHO_AM_I, &out->whoami);
+  log_timing("WHO_AM_I read", t_start, &t_prev);
 
   /* 설정 적용 */
   RC(lsm6dso_set_fs(lsm6dso_scale));
+  log_timing("set_fs", t_start, &t_prev);
   RC(lsm6dso_apply_fifo_base());
+  log_timing("apply_fifo_base", t_start, &t_prev);
 
   /* 1. FIFO 리셋 (Bypass -> Continuous) */
   RC(fifo_set_mode(FIFO_MODE_BYPASS));
+  log_timing("fifo bypass", t_start, &t_prev);
   k_busy_wait(100);
 
   RC(fifo_set_mode(FIFO_MODE_CONTINUOUS)); // Start Capture
+  log_timing("fifo continuous start", t_start, &t_prev);
 
   /* 1024개 샘플 수집 (512 * 2 chunks) */
   uint16_t total_parsed = 0;
@@ -465,10 +518,10 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale)
     /* 2. & 4. Polling (Busy Wait) */
     /* 조건: WTM 플래그(Bit7) == 1 or DIFF >= 512 */
     /* Timeout : 512샘플 @ 3.33k = ~154ms. 여유 200ms */
-    uint32_t t_start = k_uptime_get_32();
+    uint32_t chunk_wait_start = now_ms();
     bool ready = false;
 
-    while ((k_uptime_get_32() - t_start) < 250)
+    while ((now_ms() - chunk_wait_start) < 250)
     {
       uint8_t st[2];
       /* i2c_burst_read를 사용하여 STATUS1,2를 한번에 읽음 */
@@ -495,6 +548,8 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale)
       return -EIO;
     }
 
+    log_timing(chunk == 0 ? "chunk0 wait WTM" : "chunk1 wait WTM", t_start, &t_prev);
+
     /* 3. & 5. Burst Read */
     /* 읽어야 할 바이트: 512 * 7 = 3584 bytes */
     uint8_t reg_addr = REG_FIFO_DATA_OUT_TAG;
@@ -503,6 +558,8 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale)
       LOG_ERR("FIFO read fail at chunk %d", chunk);
       return -EIO;
     }
+
+    log_timing(chunk == 0 ? "chunk0 burst read" : "chunk1 burst read", t_start, &t_prev);
 
     /* 데이터 파싱 (Raw_Data -> g_ax/ay/az) */
     /* PDF는 Raw_Data[0~511], [512~1023] 저장. */
@@ -562,6 +619,7 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale)
     }
 
     total_parsed += parse_idx;
+    log_timing(chunk == 0 ? "chunk0 parse" : "chunk1 parse", t_start, &t_prev);
 #endif
   }
 
@@ -570,12 +628,15 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale)
 
   /* 6. 종료: 센서 Power-down / I2C Off (여기서는 Bypass로 전환) */
   RC(fifo_set_mode(FIFO_MODE_BYPASS));
+  log_timing("capture complete (fifo stop)", t_start, &t_prev);
 
   if (total_parsed != 1024)
   {
     LOG_WRN("Sample count mismatch: %d", total_parsed);
     return -EIO;
   }
+
+  log_timing("capture complete (samples ready)", t_start, &t_prev);
 
   /* --- DSP Calculation --- */
 
@@ -602,6 +663,8 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale)
     out->rms_ms2_x100[i] = MS2_X100(sqrtf(sum_sq[i] / total_parsed));
   }
 
+  log_timing("broadband rms/peak", t_start, &t_prev);
+
   /* 10-1000Hz 대역 제한 통계 (FFT 기반) */
   for (int axis = 0; axis < 3; ++axis)
   {
@@ -611,7 +674,10 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t lsm6dso_scale)
         src, total_parsed, lsb_to_ms2, g_cal_offset_lsb[axis],
         &out->bl_rms_ms2_x100[axis], &out->bl_peak_ms2_x100[axis],
         &out->bl_rms_mmps_x100[axis], &out->bl_peak_mmps_x100[axis]);
+    log_timing(axis == 0 ? "PSD axis X total" : (axis == 1 ? "PSD axis Y total" : "PSD axis Z total"), t_start, &t_prev);
   }
+
+  log_timing("capture_once total", t_start, &t_prev);
 
   return 0;
 }
