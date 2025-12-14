@@ -7,7 +7,7 @@ LOG_MODULE_REGISTER(ltc3337, LOG_LEVEL_INF);
 
 #define LTC3337_ADDR 0x64
 
-/* Register sub-address map */
+/* 레지스터 서브어드레스 */
 #define LTC3337_REG_A 0x01u
 #define LTC3337_REG_B 0x02u
 #define LTC3337_REG_C 0x03u
@@ -17,30 +17,28 @@ LOG_MODULE_REGISTER(ltc3337, LOG_LEVEL_INF);
 #define LTC3337_REG_G 0x07u
 #define LTC3337_REG_H 0x08u
 
-/* Register C bits */
-#define LTC3337_C_OVERFLOW_FAULT_BIT   0
-#define LTC3337_C_COULOMB_ALARM_BIT    1
-#define LTC3337_C_COLD_ALARM_BIT       2
-#define LTC3337_C_HOT_ALARM_BIT        3
-#define LTC3337_C_IPK_SHIFT            5 /* C[7:5] */
+/* C 레지스터 비트 */
+#define LTC3337_C_OVERFLOW_FAULT_BIT 0
+#define LTC3337_C_COULOMB_ALARM_BIT 1
+#define LTC3337_C_COLD_ALARM_BIT 2
+#define LTC3337_C_HOT_ALARM_BIT 3
+#define LTC3337_C_IPK_SHIFT 5 /* C[7:5] */
 
-/* Register A fields */
-#define LTC3337_A_M_MASK               0x000Fu /* A[3:0] */
+/* A 레지스터 필드 */
+#define LTC3337_A_M_MASK 0x000Fu /* A[3:0] */
 
-/* ADC */
-#define LTC3337_V_LSB_UV 1465u /* 1.465mV per count => 1465uV */
+/* ADC 변환 (1카운트 = 1.465mV) */
+#define LTC3337_V_LSB_UV 1465u
 
-/* I2C device */
+/* I2C 디바이스 */
 static const struct device *i2c1 = DEVICE_DT_GET(DT_NODELABEL(i2c1));
 
-/* Cached configuration derived at init */
-static uint8_t  g_ipk = 0;
-static uint8_t  g_m   = 0;
+/* 부팅 시 결정되는 설정 값 캐시 */
+static uint8_t g_ipk = 0;
+static uint8_t g_m = 0;
 static uint32_t g_fs_mah = 0;
 
-/**
- * @brief Read a 16-bit register from LTC3337 (LSB-first).
- */
+/* 16비트 레지스터 읽기(LSB-first) */
 static int ltc3337_reg_read16(uint8_t subaddr, uint16_t *out)
 {
     uint8_t rx[2];
@@ -50,12 +48,7 @@ static int ltc3337_reg_read16(uint8_t subaddr, uint16_t *out)
         return -EINVAL;
     }
 
-    ret = i2c_write(i2c1, &subaddr, 1, LTC3337_ADDR);
-    if (ret) {
-        return ret;
-    }
-
-    ret = i2c_read(i2c1, rx, sizeof(rx), LTC3337_ADDR);
+    ret = i2c_write_read(i2c1, LTC3337_ADDR, &subaddr, 1, rx, sizeof(rx));
     if (ret) {
         return ret;
     }
@@ -64,9 +57,7 @@ static int ltc3337_reg_read16(uint8_t subaddr, uint16_t *out)
     return 0;
 }
 
-/**
- * @brief Write a 16-bit register to LTC3337 (LSB-first).
- */
+/* 16비트 레지스터 쓰기(LSB-first) */
 static int ltc3337_reg_write16(uint8_t subaddr, uint16_t val)
 {
     uint8_t tx[3];
@@ -78,22 +69,18 @@ static int ltc3337_reg_write16(uint8_t subaddr, uint16_t val)
     return i2c_write(i2c1, tx, sizeof(tx), LTC3337_ADDR);
 }
 
-/**
- * @brief Convert 12-bit ADC count (bits[11:0]) to uV.
- */
+/* 12비트 ADC 카운트를 uV로 변환 */
 static uint32_t ltc3337_adc_count_to_uv(uint16_t reg_val)
 {
     uint16_t count12 = reg_val & 0x0FFFu;
     return (uint32_t)count12 * (uint32_t)LTC3337_V_LSB_UV;
 }
 
-/**
- * @brief Choose prescaler M and FS(mAh) from project spec table (QBAT=17,000mAh).
- */
+/* IPK 코드에 따라 M/FS(mAh) 결정(QBAT=17000mAh 기준) */
+/* 3.6V 리튬 D셀을 19,000mAh로 본다면 각 fs를 동일한 비율(19000/17000 ≈ 1.118)로 조정 */
 static void ltc3337_choose_m_fs(uint8_t ipk, uint8_t *m_out, uint32_t *fsmah_out)
 {
-    /* defaults */
-    uint8_t  m  = 3;
+    uint8_t m = 3;
     uint32_t fs = 30542;
 
     switch (ipk & 0x7u) {
@@ -112,9 +99,7 @@ static void ltc3337_choose_m_fs(uint8_t ipk, uint8_t *m_out, uint32_t *fsmah_out
     *fsmah_out = fs;
 }
 
-/**
- * @brief Convert IPK code to IPEAK (mA).
- */
+/* IPK 코드를 IPEAK(mA)로 변환 */
 static uint32_t ltc3337_ipk_to_ipeak_ma(uint8_t ipk)
 {
     switch (ipk & 0x7u) {
@@ -140,7 +125,7 @@ int ltc3337_init(void)
         return -ENODEV;
     }
 
-    /* Read C to get IPK[2:0] */
+    /* C 레지스터에서 IPK 스트랩 확인 */
     ret = ltc3337_reg_read16(LTC3337_REG_C, &reg_c);
     if (ret) {
         return ret;
@@ -148,21 +133,17 @@ int ltc3337_init(void)
 
     g_ipk = (uint8_t)((reg_c >> LTC3337_C_IPK_SHIFT) & 0x7u);
 
-    /* Choose M and FS */
+    /* M/FS 계산 */
     ltc3337_choose_m_fs(g_ipk, &g_m, &g_fs_mah);
 
-    /*
-     * Program A:
-     *  - A[3:0] = M
-     *  - A[15:8] alarm threshold keep 0xFF (max)
-     */
+    /* A: A[3:0]=M, A[15:8]=0xFF(알람 임계 최대 유지) */
     reg_a = (uint16_t)(0xFF00u | (g_m & (uint8_t)LTC3337_A_M_MASK));
     ret = ltc3337_reg_write16(LTC3337_REG_A, reg_a);
     if (ret) {
         return ret;
     }
 
-    /* Optional: clear accumulated charge counter at boot */
+    /* 부팅 시 적산 카운터 초기화 - 값 유지시 실행하지 않아야 함 */
     ret = ltc3337_reg_write16(LTC3337_REG_B, 0x0000u);
     if (ret) {
         return ret;
@@ -183,10 +164,10 @@ int ltc3337_read_status(struct ltc3337_status *st)
         return -ENODEV;
     }
 
-    /* Clear output first (avoid stale fields on partial read failure) */
+    /* 출력 버퍼 초기화(부분 실패 시 이전 값 잔류 방지) */
     *st = (struct ltc3337_status){0};
 
-    /* Read essential registers */
+    /* 필수 레지스터 */
     ret = ltc3337_reg_read16(LTC3337_REG_A, &st->reg_a);
     if (ret) return ret;
 
@@ -196,48 +177,52 @@ int ltc3337_read_status(struct ltc3337_status *st)
     ret = ltc3337_reg_read16(LTC3337_REG_C, &st->reg_c);
     if (ret) return ret;
 
-    /* Optional registers (voltage etc). If fail, keep 0 but don't abort. */
+    /* 선택 레지스터(전압 등). 실패해도 0 유지 후 진행 */
     (void)ltc3337_reg_read16(LTC3337_REG_D, &st->reg_d);
     (void)ltc3337_reg_read16(LTC3337_REG_E, &st->reg_e);
     (void)ltc3337_reg_read16(LTC3337_REG_F, &st->reg_f);
     (void)ltc3337_reg_read16(LTC3337_REG_G, &st->reg_g);
     (void)ltc3337_reg_read16(LTC3337_REG_H, &st->reg_h);
 
-    /* Decode IPK and choose M/FS (keep aligned with board strap) */
+    /* IPK/M/FS 계산 */
     st->ipk_code = (uint8_t)((st->reg_c >> LTC3337_C_IPK_SHIFT) & 0x7u);
-    ltc3337_choose_m_fs(st->ipk_code, &g_m, &g_fs_mah);
-
-    /* M can be read from A too; prefer cached logic but expose both ways */
     st->qlsb_code = (uint8_t)(st->reg_a & LTC3337_A_M_MASK);
-    st->fs_mah = g_fs_mah;
+    {
+        uint8_t calc_m = 0;
+        uint32_t fs_mah = 0;
+        ltc3337_choose_m_fs(st->ipk_code, &calc_m, &fs_mah);
+        g_m = calc_m;
+        g_fs_mah = fs_mah;
+        st->fs_mah = fs_mah;
+    }
 
-    /* Alarms / flags */
+    /* 알람 플래그 */
     st->flags.overflow_fault = (st->reg_c & BIT(LTC3337_C_OVERFLOW_FAULT_BIT)) != 0u;
     st->flags.coulomb_alarm  = (st->reg_c & BIT(LTC3337_C_COULOMB_ALARM_BIT))  != 0u;
     st->flags.cold_alarm     = (st->reg_c & BIT(LTC3337_C_COLD_ALARM_BIT))     != 0u;
     st->flags.hot_alarm      = (st->reg_c & BIT(LTC3337_C_HOT_ALARM_BIT))      != 0u;
 
-    /* I2C-only proxy bat_ok (GPIO BATOUT_OK 있으면 상위에서 교체 권장) */
+    /* I2C로만 확인하는 bat_ok 프록시 */
     st->bat_ok = !st->flags.overflow_fault;
 
-    /* Convert charge counter -> mAh (0..65535 => 0..FS) */
+    /* 적산 카운터를 mAh로 변환 (0..65535 -> 0..FS) */
     st->used_mah = (uint32_t)(((uint64_t)st->reg_b * (uint64_t)st->fs_mah + 32767u) / 65535u);
     st->mah_used_fs = st->used_mah;
 
-    /* Percent * 100 (e.g., 12.34%) */
+    /* % * 100 (예: 12.34% -> 1234) */
     st->used_pct_x100 = (st->fs_mah > 0u) ?
         (uint32_t)(((uint64_t)st->used_mah * 10000u + (st->fs_mah / 2u)) / st->fs_mah) : 0u;
 
-    /* Voltages (uV) */
+    /* 전압(uV) */
     st->vbat_in_on_uv   = ltc3337_adc_count_to_uv(st->reg_d);
     st->vbat_in_off_uv  = ltc3337_adc_count_to_uv(st->reg_e);
     st->vbat_out_on_uv  = ltc3337_adc_count_to_uv(st->reg_f);
     st->vbat_out_off_uv = ltc3337_adc_count_to_uv(st->reg_g);
 
-    /* Die temperature raw code */
+    /* 다이 온도 코드 */
     st->die_temp_code = (uint8_t)((st->reg_c >> 8) & 0xFFu);
 
-    /* Impedance approx: Z(uOhm) ≈ dV(uV)/I(mA) */
+    /* 임피던스 근사: Z ≈ dV(uV) / I(mA) */
     {
         uint32_t ipeak_ma = ltc3337_ipk_to_ipeak_ma(st->ipk_code);
         int32_t dv_uv = (int32_t)st->vbat_in_off_uv - (int32_t)st->vbat_in_on_uv;

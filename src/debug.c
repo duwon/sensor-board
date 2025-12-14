@@ -19,6 +19,7 @@
 #include "lsm6dso.h"
 #include "xgzp6897d.h"
 #include "xgzp6847d.h"
+#include "ltc3337.h"
 #include "ssc_pressure.h"
 #include "ntc.h"
 
@@ -40,6 +41,8 @@ static int cmd_i2c_scan(const struct shell *sh, size_t argc, char **argv);
 static int cmd_imu_who(const struct shell *sh, size_t argc, char **argv);
 static int cmd_dip_read(const struct shell *sh, size_t argc, char **argv);
 static int cmd_log_sw(const struct shell *sh, size_t argc, char **argv);
+static int cmd_bat_init(const struct shell *sh, size_t argc, char **argv);
+static int cmd_bat_status(const struct shell *sh, size_t argc, char **argv);
 #endif
 
 /* ─────────────────────────────────────────────
@@ -222,6 +225,55 @@ static int cmd_log_sw(const struct shell *sh, size_t argc, char **argv)
     return -EINVAL;
 }
 
+/* --- Battery(LTC3337) debug ------------------------------------ */
+static int cmd_bat_init(const struct shell *sh, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc);
+    ARG_UNUSED(argv);
+
+    int rc = ltc3337_init();
+    if (rc == 0)
+    {
+        shell_print(sh, "LTC3337 init OK");
+    }
+    else
+    {
+        shell_error(sh, "LTC3337 init failed: %d", rc);
+    }
+    return rc;
+}
+
+static int cmd_bat_status(const struct shell *sh, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc);
+    ARG_UNUSED(argv);
+
+    struct ltc3337_status st;
+    int rc = ltc3337_read_status(&st);
+    if (rc)
+    {
+        shell_error(sh, "LTC3337 status read failed: %d", rc);
+        return rc;
+    }
+
+    double pct = (double)st.used_pct_x100 / 100.0;
+    uint32_t vin_on_mv = (st.vbat_in_on_uv + 500u) / 1000u;
+    uint32_t vin_off_mv = (st.vbat_in_off_uv + 500u) / 1000u;
+    uint32_t vout_on_mv = (st.vbat_out_on_uv + 500u) / 1000u;
+    uint32_t vout_off_mv = (st.vbat_out_off_uv + 500u) / 1000u;
+
+    shell_print(sh, "bat_ok=%u ipk_code=%u M=%u FS=%u mAh used=%u mAh (%.2f%%)",
+                st.bat_ok ? 1 : 0, st.ipk_code, st.qlsb_code, st.fs_mah, st.used_mah, pct);
+    shell_print(sh, "flags: ovf=%u coul=%u cold=%u hot=%u",
+                st.flags.overflow_fault, st.flags.coulomb_alarm, st.flags.cold_alarm, st.flags.hot_alarm);
+    shell_print(sh, "Vin on/off=%u/%u mV, Vout on/off=%u/%u mV",
+                vin_on_mv, vin_off_mv, vout_on_mv, vout_off_mv);
+    shell_print(sh, "Z=%d uOhm, die_temp_code=0x%02X", st.z_uohm, st.die_temp_code);
+    shell_print(sh, "regs: A=0x%04X B=0x%04X C=0x%04X D=0x%04X E=0x%04X F=0x%04X G=0x%04X H=0x%04X",
+                st.reg_a, st.reg_b, st.reg_c, st.reg_d, st.reg_e, st.reg_f, st.reg_g, st.reg_h);
+    return 0;
+}
+
 /* --- NTC 온도 읽기 커맨드 ---------------------------------------- */
 static int cmd_ntc(const struct shell *sh, size_t argc, char **argv)
 {
@@ -287,6 +339,12 @@ static int cmd_ble_stop(const struct shell *shell, size_t argc, char **argv)
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_ble,
                                SHELL_CMD(start, NULL, "Start BLE advertising (legacy/ext auto).", cmd_ble_start),
                                SHELL_CMD(stop, NULL, "Stop BLE advertising.", cmd_ble_stop),
+                               SHELL_SUBCMD_SET_END);
+
+/* Battery commands */
+SHELL_STATIC_SUBCMD_SET_CREATE(sub_bat,
+                               SHELL_CMD(init, NULL, "Initialize LTC3337", cmd_bat_init),
+                               SHELL_CMD(status, NULL, "Read LTC3337 battery status", cmd_bat_status),
                                SHELL_SUBCMD_SET_END);
 
 /* --- GPIO 제어 커맨드 ---------------------------------------- */
@@ -862,6 +920,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_diag,
                                SHELL_CMD(ntc, NULL, "Read NTC on AIN1 and print temperature", cmd_ntc),
                                SHELL_CMD(gpio, &sub_gpio_root, "GPIO controls", NULL),
                                SHELL_CMD(imu, &sub_imu, "IMU LSM6DSO test", NULL),
+                               SHELL_CMD(bat, &sub_bat, "LTC3337 battery gauge", NULL),
                                SHELL_CMD(p1, NULL, "XGZP6897D001KPDPN (0x58) Read", cmd_xgzp_read),
                                SHELL_CMD(p2, NULL, "XGZP6897D100KPDPN (0x58) Read", cmd_xgzp_read),
                                SHELL_CMD(p3, NULL, "XGZP6847DC001MPGPN (0x6D) Read", cmd_xgzp_read),
