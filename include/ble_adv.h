@@ -1,4 +1,8 @@
 #pragma once
+/**
+ * @file ble_adv.h
+ * @brief BLE 광고 데이터 구조와 제어 인터페이스 선언
+ */
 #include <zephyr/kernel.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -19,73 +23,33 @@ struct __packed sensor_adv_data_t {
      * @details Bluetooth SIG Company ID (0xFFFF) 
      */
     uint16_t company_id;
-
-    /** @brief [Index 7] 데이터 구조 버전
-     * @details 0x01 
-     */
     uint8_t structure_version;
-
-    /** @brief [Index 8] 센서 모델 코드
-     * @details 센서 종류를 나타내는 숫자 코드 (예: 0x01=T100) 
-     */
     uint8_t model_code;
-
-    /** @brief [Index 9] 장치 상태 (Device Status)
-     * @details 0x00: 정상, 0x01: 오류 (Bitfield: 센서 연결, SOH 연결 등)
-     */
-    uint8_t device_status;
-
-    /** @brief [Index 10] 오류 상세 정보 (Error Info)
-     * @details Runtime 에러 발생 시 추가 정보 
-     */
+	uint8_t device_status;
     uint8_t error_info;
-
-    /** @brief [Index 11] MCU 온도
-     * @details Signed 8-bit Integer (소수점 이하 버림) 
-     */
     int8_t mcu_temperature;
-
-    /** @brief [Index 12] 배터리 잔량
-     * @details 0 ~ 100 (%) 
-     */
     uint8_t battery_percent;
-
-    /** @brief [Index 13] 값 유효성 마스크 (Value Presence Mask)
-     * @details Sensor Value 1~6 중 어떤 값이 유효한지 나타내는 비트마스크 
-     */
     uint8_t value_presence_mask;
-
-    /* ---------------- AD Structure 2: 데이터 페이로드 (24 Bytes) ---------------- */
-    /** @brief [Index 14-17] 센서 값 1
-     * @details 32-bit Signed Integer, 값에 따라 Value=실제 값 x100 
-     */
     int32_t sensor_value_1;
-
-    /** @brief [Index 18-21] 센서 값 2
-     * @details 32-bit Signed Integer 
-     */
     int32_t sensor_value_2;
-
-    /** @brief [Index 22-25] 센서 값 3
-     * @details 32-bit Signed Integer 
-     */
     int32_t sensor_value_3;
-
-    /** @brief [Index 26-29] 센서 값 4
-     * @details 32-bit Signed Integer 
-     */
     int32_t sensor_value_4;
-
-    /** @brief [Index 30-33] 센서 값 5
-     * @details 32-bit Signed Integer 
-     */
     int32_t sensor_value_5;
-
-    /** @brief [Index 34-37] 센서 값 6
-     * @details 32-bit Signed Integer
-     */
     int32_t sensor_value_6;
 };
+
+struct Status
+{
+	uint8_t  Dipsw;						// 부팅 후 읽은 딥스위치 값
+	uint8_t  Led_Cnt;					// led blink 횟수
+	uint16_t Led_Interval;				// LED 브링크 간격
+	uint8_t  Sleep_Sec;					// sleep 시간
+	uint16_t Complete;					// ble 송신완료 후 sleep 진입확인 flag
+	uint16_t Bat_Timer;					// 600sec 마다 bat 체크 부팅후 처음은 100초 후 확인
+	uint16_t Model;	
+};
+
+
 
 /** @enum ble_init_t
  * @brief ble 초기화 유형

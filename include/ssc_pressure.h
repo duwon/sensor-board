@@ -1,0 +1,182 @@
+/**
+ * @file ssc_pressure.h
+ * @brief Honeywell SSC (SSCDJNNxxxx) I2C 압력 센서 드라이버.
+ *
+ * - 디지털 출력 압력 센서 (Honeywell TruStability SSC)
+ * - 전달 함수(Transfer function): 14비트 카운트의 10% ~ 90% 범위 (0x0666 ~ 0x3999)
+ * - 지원 모델:
+ *   SSCDJNN010BA2A3 : 0 ~ 10 bar
+ *   SSCDJNN100MD2A3 : ±1020 mmH2O
+ *   SSCDJNN002ND2A3 : ±50.8 mmH2O
+ */
+
+#ifndef SSC_PRESSURE_H_
+#define SSC_PRESSURE_H_
+
+#include <zephyr/device.h>
+#include <zephyr/drivers/i2c.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+
+/** @brief Honeywell 디지털 전달 함수의 한계값 (14비트 카운트). */
+#define SSC_OUTPUT_MIN_COUNTS 1638U  /**< 2^14의 10% (0x0666). */
+#define SSC_OUTPUT_MAX_COUNTS 14745U /**< 2^14의 90% (0x3999). */
+
+    /**
+     * @brief SSC 압력 범위 타입
+     *
+     *      SSCDJNN010BA2A3 : 0 ~ 10 bar
+     *      SSCDJNN100MD2A3 : ±1020 mmH2O
+     *      SSCDJNN002ND2A3 : ±50.8 mmH2O
+     */
+    typedef enum
+    {
+        SSCDJNN010BA2A3 = 0, 
+        SSCDJNN100MD2A3 = 1, 
+        SSCDJNN002ND2A3 = 2
+    } ssc_range_t;
+
+    /** @brief 첫 번째 데이터 바이트에서 디코딩된 상태 비트. */
+    typedef enum
+    {
+        SSC_STATUS_NORMAL = 0,    /**< 00: 정상 작동, 유효한 데이터. */
+        SSC_STATUS_COMMAND = 1,   /**< 01: 명령 모드 (일반적인 사용에서는 발생하지 않아야 함). */
+        SSC_STATUS_STALE = 2,     /**< 10: 오래된 데이터 (너무 빠르게 폴링함). */
+        SSC_STATUS_DIAGNOSTIC = 3 /**< 11: 진단 오류. */
+    } ssc_status_t;
+
+    /**
+     * @brief SSC 센서로부터 읽은 Raw 데이터 구조체.
+     */
+    typedef struct
+    {
+        uint16_t bridge;      /**< 14비트 브리지 (압력) 카운트. */
+        uint16_t temperature; /**< 11비트 온도 카운트. */
+        ssc_status_t status;  /**< 첫 번째 바이트에서 디코딩된 상태 비트. */
+    } ssc_raw_data_t;
+
+/** @name SSCDJNN010BA2A3 : 0 ~ 10 bar
+ * @note bar 단위로 쓰고 싶으면 p_min=0, p_max=10 그대로 사용.
+ * @{
+ */
+#define SSC_010BA2A3_P_MIN_BAR 0.0f
+#define SSC_010BA2A3_P_MAX_BAR 10.0f
+/** @} */
+
+/** @name SSCDJNN100MD2A3 : ±1020 mmH2O
+ * @note mmH2O 단위.
+ * @{
+ */
+#define SSC_100MD2A3_P_MIN_MMH2O (-1020.0f)
+#define SSC_100MD2A3_P_MAX_MMH2O (1020.0f)
+/** @} */
+
+/** @name SSCDJNN002ND2A3 : ±50.8 mmH2O
+ * @note mmH2O 단위.
+ * @{
+ */
+#define SSC_002ND2A3_P_MIN_MMH2O (-50.8f)
+#define SSC_002ND2A3_P_MAX_MMH2O (50.8f)
+    /** @} */
+
+    /**
+     * @brief 
+     * 
+     * @param i2c   I2C 장치 포인터.
+     * @param addr   7비트 I2C 주소 (일반적으로 @ref SSC_I2C_ADDR_0X28).
+     * @param[out] out 채울 Raw 데이터 구조체.
+     *
+     * @retval 0 성공 시.
+     * @retval -EIO I2C 오류 또는 진단 오류 발생 시.
+     * @retval -EAGAIN 오래된 데이터(stale data)일 때 (상태=SSC_STATUS_STALE).
+     */
+    int ssc_read_raw(const struct device *i2c, uint16_t addr, ssc_raw_data_t *out);
+
+    /**
+     * @brief 브리지 카운트를 센서 범위를 사용하여 압력으로 변환합니다.
+     *
+     * 전달 함수 (Honeywell Equation 2):
+     * Pressure = ( (Output - Outputmin) * (Pmax - Pmin) /
+     *        (Outputmax - Outputmin) ) + Pmin
+     *
+     * @param bridge Raw 14비트 브리지 카운트 (0 ~ 16383).
+     * @param p_min  Outputmin에서의 압력 (단위: bar, mmH2O 등).
+     * @param p_max  Outputmax에서의 압력 (p_min과 동일 단위).
+     *
+     * @return p_min/p_max와 동일한 단위의 압력 값.
+     */
+    float ssc_bridge_to_pressure(uint16_t bridge, float p_min, float p_max);
+
+    /**
+     * @brief 11비트 온도 카운트를 섭씨 온도로 변환합니다.
+     *
+     * 공식 (Honeywell Equation 3):
+     * Temperature(°C) = (DigitalTemp / 2047) * 200 - 50
+     *
+     * @param temp_raw 11비트 Raw 온도 카운트.
+     *
+     * @return 섭씨 단위의 온도.
+     */
+    float ssc_temperature_to_c(uint16_t temp_raw);
+
+    /**
+     * @brief 상위 레벨 도우미 함수: 압력 및 온도를 읽고 변환합니다.
+     *
+     * @param i2c   I2C 장치 포인터.
+     * @param addr   7비트 I2C 주소 (0x28).
+     * @param p_min  범위 최솟값 (단위 별도 정의).
+     * @param p_max  범위 최댓값.
+     * @param[out] p  계산된 압력 값 (p_min/p_max와 동일 단위).
+     * @param[out] t  섭씨 온도 (NULL 이면 무시).
+     *
+     * @retval 0 성공 시.
+     * @retval -EIO I2C 오류 또는 진단 오류 발생 시.
+     * @retval -EAGAIN 오래된 데이터(stale data)일 때.
+     */
+    int ssc_read_pressure(const struct device *i2c, uint16_t addr, float p_min, float p_max, float *p, float *t);
+
+
+        /**
+     * @brief SSC 센서 압력 측정 + 윈저라이즈드 평균 필터 적용
+     *
+     * - 동일 센서를 10번 연속 측정 후 윈저라이즈드 평균 함수로 노이즈 제거
+     * - 온도는 마지막 측정 값 한 번만 사용 (필터 미적용)
+     *
+     * @param range_type   센서 압력 범위 타입
+     * @param[out] pressure_pa   필터 적용된 압력 값 (단위: Pa, NULL 금지)
+     * @param[out] temperature_c 마지막 측정 온도 값 (단위: ℃, NULL이면 무시)
+     * @param apply_offset 보정 오프셋 적용 여부 (true: 보정값 적용, false: 미적용)
+     *
+     * @retval 0        성공
+     * @retval -ENODEV  I2C 디바이스 미준비
+     * @retval -EINVAL  파라미터 오류
+     * @retval <0       I2C 통신 에러 (Zephyr errno)
+     */
+    int read_ssc_filtered(ssc_range_t range_type, float *pressure_pa, float *temperature_c, bool apply_offset);
+
+    /**
+     * @brief 현재 측정값이 0이 되도록 SSC 센서 오프셋을 저장합니다.
+     *
+     * - range_type별(010BA/bar, 100MD/mmH2O, 002ND/mmH2O)로 독립 저장
+     * - 이후 read_ssc_filtered(..., apply_offset=true)에서 저장된 오프셋 적용
+     *
+     * @param range_type 센서 압력 범위 타입
+     * @retval 0   성공
+     * @retval <0  측정 오류 또는 I2C 에러
+     */
+    int set_calibration_ssc(ssc_range_t range_type);
+
+    /**
+     * @brief 저장된 SSC 보정 오프셋을 모두 0으로 초기화합니다.
+     */
+    void clear_calibration_ssc(void);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* SSC_PRESSURE_H_ */

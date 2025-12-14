@@ -61,6 +61,9 @@ static inline int tca_rd(uint8_t reg, uint8_t *v)
  * @param o 해석된 비트들이 저장될 dip_bits 구조체 포인터
  */
 
+
+
+#if 1
 static inline void parse_bits(uint8_t v, struct dip_bits *o)
 {
     if (!o) return;
@@ -71,7 +74,26 @@ static inline void parse_bits(uint8_t v, struct dip_bits *o)
     o->pwr      = (v >> 6) & 0x01;  // 비트 [6] 
     o->legacy   = (v >> 7) & 0x01;  // 비트 [7] 
 }
+#else
+static inline void parse_bits(uint8_t v, struct dip_bits *o)
+{
+    if (!o) return;
+    o->model    = (v & 0xe0) >> 5;
+    o->mode_sub = (v >> 4) & 0x01;  
+    o->phy      = (v >> 3) & 0x01;  
+    o->period   = (v >> 2) & 0x01;  
+    o->pwr      = (v >> 1) & 0x01;  
+    o->legacy   = v & 0x01;  		
+}
+#endif
 
+uint8_t reverse8(uint8_t x)
+{
+    x = ((x & 0xF0) >> 4) | ((x & 0x0F) << 4);   // 4비트 swap
+    x = ((x & 0xCC) >> 2) | ((x & 0x33) << 2);   // 2비트 swap
+    x = ((x & 0xAA) >> 1) | ((x & 0x55) << 1);   // 1비트 swap
+    return x;
+}
 /** @brief DIP 스위치 값을 읽고 해석합니다.
  *
  * 이 함수는 RPU 전원을 켠 후 TCA9534를 입력 모드로 설정하고,
@@ -93,8 +115,7 @@ int Get_Switch(uint8_t *raw, struct dip_bits *parsed)
     if (!device_is_ready(i2c0_dev)) {
         LOG_ERR("i2c0 not ready");
         /* 전원은 다시 꺼줌 */
-        power_rpu(false);
-        return -ENODEV;
+        goto Err;
     }
 
     /* 2) TCA9534를 입력 모드로 설정 (REG_CONFIG = 0xFF), 극성 반전 안함 (REG_POLARITY = 0x00) */
@@ -114,6 +135,9 @@ int Get_Switch(uint8_t *raw, struct dip_bits *parsed)
     /* 간단 디바운싱: 두 번 읽은 값이 같으면 그 값을, 다르면 비트 AND (스위치가 High로 튀는 경우 방지) */
     uint8_t v = (v1 == v2) ? v1 : (v1 & v2);
 
+
+//	v = reverse8 (v);
+
     /* 4) Raw 값 및 파싱된 값 저장 */
     if (raw)    *raw = v;
     if (parsed) parse_bits(v, parsed);
@@ -121,8 +145,8 @@ int Get_Switch(uint8_t *raw, struct dip_bits *parsed)
     /* 로그 출력 (디버그 용) */
     struct dip_bits log_bits;
     parse_bits(v, &log_bits);
-    LOG_INF("DIP=0x%02X model=%u phy=%u interval=%u pwr=%u legacy=%u",
-            v, v&0x0f, log_bits.phy, log_bits.period, log_bits.pwr, log_bits.legacy);
+    LOG_INF("DIP RAW=0x%02X | model=%u mode=%u phy=%u period=%u pwr=%u legacy=%u",
+            v, log_bits.model, log_bits.mode_sub, log_bits.phy, log_bits.period, log_bits.pwr, log_bits.legacy);
 
 	power_rpu(false);
     return 0; 

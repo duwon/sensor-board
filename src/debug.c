@@ -1,3 +1,10 @@
+/**
+ * @file
+ * @brief 진단/디버그 명령과 헬퍼 구현
+ *
+ * - I2C 버스 스캔, 장치 프로브, 각종 쉘 커맨드 등록
+ * - 부팅 직후 간단한 하드웨어 확인 루틴 제공
+ */
 #include <zephyr/device.h>
 #include <zephyr/drivers/i2c.h>
 #include <zephyr/kernel.h>
@@ -10,8 +17,17 @@
 #include "sensors.h"
 #include "gpio_if.h"
 #include "lsm6dso.h"
-#include "lsm6dso.h"
 #include "xgzp6897d.h"
+#include "xgzp6847d.h"
+#include "ssc_pressure.h"
+#include "ntc.h"
+
+/* sensors.c 에서 갱신하는 글로벌 IMU 통계 사용 */
+extern lsm6dso_stats_t g_lsm6dso_stats;
+/* Standard C headers for helpers used below */
+#include <string.h>
+#include <stdlib.h>
+#include <errno.h>
 
 LOG_MODULE_REGISTER(app_dbg, LOG_LEVEL_INF);
 
@@ -30,6 +46,11 @@ static int cmd_log_sw(const struct shell *sh, size_t argc, char **argv);
  * I2C 전체 스캔 (0x03~0x77)
  *  - 트랜잭션 명확히 보이도록 write_read 사용 (0바이트 write 회피)
  * ────────────────────────────────────────────*/
+/**
+ * @brief I2C0 버스 주소 스캔(0x03..0x77)
+ * @retval 0 성공
+ * @retval -ENODEV I2C 디바이스 준비 안됨
+ */
 int i2c_bus_scan(void)
 {
     if (!device_is_ready(i2c0_dev))
@@ -62,6 +83,12 @@ int i2c_bus_scan(void)
 #define WHO_AM_I 0x0F
 #define LSM6DSO_ID 0x6C
 
+/**
+ * @brief LSM6DSO WHO_AM_I 레지스터 확인
+ * @retval 0 성공(기대 아이디)
+ * @retval -ENODEV I2C 디바이스 준비 안됨
+ * @retval 음수값 통신/아이디 불일치 오류
+ */
 int lsm6dso_probe(void)
 {
     if (!device_is_ready(i2c0_dev))
@@ -81,6 +108,9 @@ int lsm6dso_probe(void)
 /* ─────────────────────────────────────────────
  * 부팅 직후 한 번 호출해 사용하는 디버그 러너
  * ────────────────────────────────────────────*/
+/**
+ * @brief 부팅 직후 한 번 호출하는 간단 디버그 런너
+ */
 void debug_run_startup(void)
 {
     /* I2C 디바그 */
@@ -108,11 +138,36 @@ static int cmd_echo(const struct shell *sh, size_t argc, char **argv)
 
 static int cmd_i2c_scan(const struct shell *sh, size_t argc, char **argv)
 {
-    ARG_UNUSED(argc);
-    ARG_UNUSED(argv);
-    int r = i2c_bus_scan();
-    shell_print(sh, "i2c_scan ret=%d", r);
-    return r;
+    if (argc == 1)
+    {
+        int r = i2c_bus_scan();
+        shell_print(sh, "i2c_scan ret=%d", r);
+        return r;
+    }
+
+    if (strcmp(argv[1], "read") == 0)
+    {
+        if (argc < 4)
+        {
+            shell_error(sh, "usage: diag i2c read <addr_hex> <reg_hex>");
+            return -EINVAL;
+        }
+        uint8_t temp_test = 0;
+        uint8_t addr = (uint8_t)strtoul(argv[2], NULL, 16);
+        uint8_t reg = (uint8_t)strtoul(argv[3], NULL, 16);
+
+        int ret = i2c_reg_read_byte(i2c0_dev, addr, reg, &temp_test);
+        if (ret < 0)
+        {
+            shell_print(sh, "read addr 0x%02X reg 0x%02X failed (err %d)", addr, reg, ret);
+            return ret;
+        }
+        shell_print(sh, "read addr 0x%02X reg 0x%02X = 0x%02X", addr, reg, temp_test);
+        return 0;
+    }
+
+    shell_error(sh, "usage: diag i2c [read <addr_hex> <reg_hex>]");
+    return -EINVAL;
 }
 
 static int cmd_imu_who(const struct shell *sh, size_t argc, char **argv)
@@ -176,13 +231,13 @@ static int cmd_ntc(const struct shell *sh, size_t argc, char **argv)
     int16_t vdd_mv = 0;
     int16_t cx100 = 0;
 
-    int rc = read_vdd_mv(&vdd_mv);
+    int rc = read_ntc(&vdd_mv);
     if (rc)
     {
         shell_error(sh, "VDD read failed: %d", rc);
         return rc;
     }
-    rc = read_ntc_ain1_cx100(&cx100);
+    rc = read_ntc(&cx100);
     if (rc)
     {
         shell_error(sh, "NTC read failed: %d", rc);
@@ -328,18 +383,52 @@ static int cmd_imu_init(const struct shell *shell, size_t argc, char **argv)
 {
     ARG_UNUSED(argc);
     ARG_UNUSED(argv);
-    int rc = lsm6dso_init(LSM6DSO_FS_4G); /* 기본 ±4g */
+    int rc = lsm6dso_init(); 
     shell_print(shell, "lsm6dso_init: rc=%d", rc);
     return rc;
 }
 
 static int cmd_imu_once(const struct shell *shell, size_t argc, char **argv)
 {
-    ARG_UNUSED(argc);
-    ARG_UNUSED(argv);
+    /* 허용 형태:
+     *  - diag imu once           -> both, 4g
+     *  - diag imu once 4g/16g    -> both, 지정 FS
+     *  - diag imu once acc|vel [4g|16g]
+     */
+    lsm6dso_scale_t scale = LSM6DSO_SCALE_4G;
+    bool acc_only = false, vel_only = false;
+
+    for (size_t i = 1; i < argc; ++i)
+    {
+        if (strcmp(argv[i], "4g") == 0)
+            scale = LSM6DSO_SCALE_4G;
+        else if (strcmp(argv[i], "16g") == 0)
+            scale = LSM6DSO_SCALE_16G;
+        else if (strcmp(argv[i], "acc") == 0)
+            acc_only = true, vel_only = false;
+        else if (strcmp(argv[i], "vel") == 0)
+            vel_only = true, acc_only = false;
+        else
+        {
+            shell_error(shell, "usage: diag imu once [acc|vel] [4g|16g]");
+            return -EINVAL;
+        }
+    }
+
+    const char *scale_str = (scale == LSM6DSO_SCALE_16G) ? "16g" : "4g";
     lsm6dso_stats_t st = {0};
-    int rc = lsm6dso_capture_once(&st);
-    shell_print(shell, "rc=%d, n=%u, WHO=0x%02X, WTM=%d", rc, st.n, st.whoami, st.wtm_reached);
+    int rc = 0;
+    if (acc_only)
+        rc = lsm6dso_capture_acc_only(&st, scale);
+    else if (vel_only)
+        rc = lsm6dso_capture_vel_only(&st, scale);
+    else
+        rc = lsm6dso_capture_once(&st, scale);
+
+    shell_print(shell, "rc=%d, n=%u, WHO=0x%02X, WTM=%d, mode=%s, scale=%s",
+                rc, st.n, st.whoami, st.wtm_reached,
+                acc_only ? "acc" : vel_only ? "vel" : "both",
+                scale_str);
 
     if (st.n > 0)
     {
@@ -347,18 +436,41 @@ static int cmd_imu_once(const struct shell *shell, size_t argc, char **argv)
                     st.peak_ms2_x100[0], st.peak_ms2_x100[1], st.peak_ms2_x100[2]);
         shell_print(shell, "ALL  RMS  (x,y,z) = (%d,%d,%d) x0.01 m/s^2",
                     st.rms_ms2_x100[0], st.rms_ms2_x100[1], st.rms_ms2_x100[2]);
-        shell_print(shell, "10-1000Hz PEAK(x,y,z) = (%d,%d,%d) x0.01 m/s^2",
-                    st.bl_peak_ms2_x100[0], st.bl_peak_ms2_x100[1], st.bl_peak_ms2_x100[2]);
-        shell_print(shell, "10-1000Hz RMS (x,y,z) = (%d,%d,%d) x0.01 m/s^2",
-                    st.bl_rms_ms2_x100[0], st.bl_rms_ms2_x100[1], st.bl_rms_ms2_x100[2]);
+        if (!vel_only)
+        {
+            shell_print(shell, "10-1000Hz PEAK(x,y,z) = (%d,%d,%d) x0.01 m/s^2",
+                        st.bl_peak_ms2_x100[0], st.bl_peak_ms2_x100[1], st.bl_peak_ms2_x100[2]);
+            shell_print(shell, "10-1000Hz RMS (x,y,z) = (%d,%d,%d) x0.01 m/s^2",
+                        st.bl_rms_ms2_x100[0], st.bl_rms_ms2_x100[1], st.bl_rms_ms2_x100[2]);
+        }
+        if (!acc_only)
+        {
+            shell_print(shell, "10-1000Hz PEAK vel (x,y,z) = (%d,%d,%d) x0.01 mm/s",
+                        st.bl_peak_mmps_x100[0], st.bl_peak_mmps_x100[1], st.bl_peak_mmps_x100[2]);
+            shell_print(shell, "10-1000Hz RMS  vel (x,y,z) = (%d,%d,%d) x0.01 mm/s",
+                        st.bl_rms_mmps_x100[0], st.bl_rms_mmps_x100[1], st.bl_rms_mmps_x100[2]);
+        }
     }
     return rc;
 }
 
 static int cmd_imu_loop(const struct shell *shell, size_t argc, char **argv)
 {
-    ARG_UNUSED(argc);
-    ARG_UNUSED(argv);
+    lsm6dso_scale_t scale = LSM6DSO_SCALE_4G;
+    if (argc >= 2)
+    {
+        if (strcmp(argv[1], "16g") == 0)
+        {
+            scale = LSM6DSO_SCALE_16G;
+        }
+        else if (strcmp(argv[1], "4g") != 0)
+        {
+            shell_error(shell, "usage: diag imu loop [4g|16g]");
+            return -EINVAL;
+        }
+    }
+
+    const char *scale_str = (scale == LSM6DSO_SCALE_16G) ? "16g" : "4g";
 
     const uint32_t duration_ms = 10 * 1000; /* 총 10초 */
     const uint32_t interval_ms = 500;       /* 0.5초 간격 */
@@ -375,7 +487,7 @@ static int cmd_imu_loop(const struct shell *shell, size_t argc, char **argv)
         lsm6dso_stats_t st = {0};
 
         uint32_t t_call0 = k_uptime_get_32();
-        int rc = lsm6dso_capture_once(&st);
+        int rc = lsm6dso_capture_once(&st, scale);
         uint32_t t_call1 = k_uptime_get_32();
 
         uint32_t capture_ms = t_call1 - t_call0;
@@ -384,8 +496,8 @@ static int cmd_imu_loop(const struct shell *shell, size_t argc, char **argv)
         shell_print(shell, "\nloop: interval_before=%ums, capture_ms=%ums",
                     (unsigned)interval_before_ms, (unsigned)capture_ms);
 
-        shell_print(shell, "rc=%d, n=%u, WHO=0x%02X, WTM=%d",
-                    rc, st.n, st.whoami, st.wtm_reached);
+        shell_print(shell, "rc=%d, n=%u, WHO=0x%02X, WTM=%d, scale=%s",
+                    rc, st.n, st.whoami, st.wtm_reached, scale_str);
 
         if (st.n > 0)
         {
@@ -414,6 +526,46 @@ static int cmd_imu_loop(const struct shell *shell, size_t argc, char **argv)
     return 0;
 }
 
+static int cmd_imu_cal(const struct shell *shell, size_t argc, char **argv)
+{
+    if (argc < 2)
+    {
+        shell_error(shell, "usage: diag imu cal <set|clear> [4g|16g]");
+        return -EINVAL;
+    }
+
+    if (strcmp(argv[1], "clear") == 0)
+    {
+        clear_calibration_lsm6dso();
+        shell_print(shell, "imu cal: cleared");
+        return 0;
+    }
+
+    if (strcmp(argv[1], "set") == 0)
+    {
+        lsm6dso_scale_t scale = LSM6DSO_SCALE_4G;
+        if (argc >= 3)
+        {
+            if (strcmp(argv[2], "16g") == 0)
+            {
+                scale = LSM6DSO_SCALE_16G;
+            }
+            else if (strcmp(argv[2], "4g") != 0)
+            {
+                shell_error(shell, "usage: diag imu cal set [4g|16g]");
+                return -EINVAL;
+            }
+        }
+
+        int rc = set_calibration_lsm6dso(scale);
+        shell_print(shell, "imu cal set: rc=%d, scale=%s", rc, (scale == LSM6DSO_SCALE_16G) ? "16g" : "4g");
+        return rc;
+    }
+
+    shell_error(shell, "usage: diag imu cal <set|clear> [4g|16g]");
+    return -EINVAL;
+}
+
 static int cmd_imu_regs(const struct shell *shell, size_t argc, char **argv)
 {
     ARG_UNUSED(argc);
@@ -431,19 +583,70 @@ static int cmd_imu_test(const struct shell *shell, size_t argc, char **argv)
     cmd_imu_init(shell, argc, argv);
     return 0;
 }
-
+/*
 static int cmd_imu_dump(const struct shell *shell, size_t argc, char **argv)
 {
-    uint16_t bytes = 224;
-    if (argc >= 2)
+  uint16_t bytes = 224;
+  if (argc >= 2)
+  {
+    int v = atoi(argv[1]);
+    if (v > 0)
+      bytes = (uint16_t)v;
+  }
+//  int rc = lsm6dso_dump_fifo(shell, bytes);
+  shell_print(shell, "imu dump: rc=%d", rc);
+  return rc;
+}
+*/
+
+/* Get_Imu_Value()를 통해 accel/vel 4g/16g 모두 수행 후 결과 출력 */
+static int cmd_imu_get(const struct shell *shell, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc);
+    ARG_UNUSED(argv);
+
+    struct
     {
-        int v = atoi(argv[1]);
-        if (v > 0)
-            bytes = (uint16_t)v;
+        const char *name;
+        uint8_t id;
+    } cases[] = {
+        {"acc_4g", SENSOR_ID_LSM6DSO_ACCEL_4G},
+        {"acc_16g", SENSOR_ID_LSM6DSO_ACCEL_16G},
+        {"vel_4g", SENSOR_ID_LSM6DSO_VELO_4G},
+        {"vel_16g", SENSOR_ID_LSM6DSO_VELO_16G},
+    };
+
+    for (size_t i = 0; i < ARRAY_SIZE(cases); ++i)
+    {
+        int rc = Get_Imu_Value(cases[i].id);
+        lsm6dso_stats_t *st = &g_lsm6dso_stats;
+
+        shell_print(shell, "[%s] rc=%d, n=%u, WHO=0x%02X", cases[i].name, rc,
+                    st->n, st->whoami);
+        if (st->n > 0)
+        {
+            shell_print(shell, "  PEAK (x,y,z) = (%d,%d,%d) x0.01 m/s^2",
+                        st->peak_ms2_x100[0], st->peak_ms2_x100[1],
+                        st->peak_ms2_x100[2]);
+            shell_print(shell, "  RMS  (x,y,z) = (%d,%d,%d) x0.01 m/s^2",
+                        st->rms_ms2_x100[0], st->rms_ms2_x100[1],
+                        st->rms_ms2_x100[2]);
+            shell_print(shell, "  10-1000Hz PEAK acc (x,y,z) = (%d,%d,%d) x0.01 m/s^2",
+                        st->bl_peak_ms2_x100[0], st->bl_peak_ms2_x100[1],
+                        st->bl_peak_ms2_x100[2]);
+            shell_print(shell, "  10-1000Hz RMS  acc (x,y,z) = (%d,%d,%d) x0.01 m/s^2",
+                        st->bl_rms_ms2_x100[0], st->bl_rms_ms2_x100[1],
+                        st->bl_rms_ms2_x100[2]);
+            shell_print(shell, "  10-1000Hz PEAK vel (x,y,z) = (%d,%d,%d) x0.01 mm/s",
+                        st->bl_peak_mmps_x100[0], st->bl_peak_mmps_x100[1],
+                        st->bl_peak_mmps_x100[2]);
+            shell_print(shell, "  10-1000Hz RMS  vel (x,y,z) = (%d,%d,%d) x0.01 mm/s",
+                        st->bl_rms_mmps_x100[0], st->bl_rms_mmps_x100[1],
+                        st->bl_rms_mmps_x100[2]);
+        }
     }
-    int rc = lsm6dso_dump_fifo(shell, bytes);
-    shell_print(shell, "imu dump: rc=%d", rc);
-    return rc;
+
+    return 0;
 }
 
 /* 쉘 서브커맨드 등록 */
@@ -451,10 +654,12 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_imu,
                                SHELL_CMD(who, NULL, "LSM6DSO WHO_AM_I check", cmd_imu_who),
                                SHELL_CMD(test, NULL, "LSM6DSO Test start", cmd_imu_test),
                                SHELL_CMD(init, NULL, "LSM6DSO init (ODR=3.33k, FS=±4g)", cmd_imu_init),
-                               SHELL_CMD(once, NULL, "Capture burst -> peak/rms", cmd_imu_once),
+                               SHELL_CMD(once, NULL, "Capture burst -> peak/rms [4g|16g|acc|vel]", cmd_imu_once),
+                               SHELL_CMD(get, NULL, "Get_Imu_Value for acc/vel 4g/16g", cmd_imu_get),
                                SHELL_CMD(regs, NULL, "Dump key IMU/FIFO registers", cmd_imu_regs),
-                               SHELL_CMD(loop, NULL, "10s, every 0.5s capture+print", cmd_imu_loop),
-                               SHELL_CMD(dump, NULL, "Burst read FIFO RAW+parse [bytes=224]", cmd_imu_dump),
+                               SHELL_CMD(loop, NULL, "10s, every 0.5s capture+print [4g|16g]", cmd_imu_loop),
+                               SHELL_CMD(cal, NULL, "Calibrate accel bias: cal set [4g|16g] | cal clear", cmd_imu_cal),
+//                               SHELL_CMD(dump, NULL, "Burst read FIFO RAW+parse [bytes=224]", cmd_imu_dump),
                                SHELL_SUBCMD_SET_END);
 
 static int cmd_xgzp_read(const struct shell *sh, size_t argc, char **argv)
@@ -462,14 +667,49 @@ static int cmd_xgzp_read(const struct shell *sh, size_t argc, char **argv)
     float p_pa = 0.0f;
     float t_c = 0.0f;
 
-    int ret = xgzp6897_read_measurement(XGZP6897_RANGE_001K,
-                                        &p_pa,
-                                        &t_c);
+    // int ret = xgzp6897_read_measurement(XGZP6897_RANGE_010K, &p_pa, &t_c);
+    int ret = 0;
+
+    if (strcmp(argv[0], "p1") == 0)
+    {
+        /* Calibaration 적용 */
+        if (argc >= 2 && strcmp(argv[1], "offset") == 0)
+        {
+            set_calibration_xgzp6897(XGZP6897_RANGE_001K);
+        }
+        else
+        {
+            ret = read_xgzp6897_filtered(XGZP6897_RANGE_001K, &p_pa, &t_c, true);
+        }
+    }
+    else if (strcmp(argv[0], "p2") == 0)
+    {
+        if (argc >= 2 && strcmp(argv[1], "offset") == 0)
+        {
+            set_calibration_xgzp6897(XGZP6897_RANGE_010K);
+        }
+        else
+        {
+            ret = read_xgzp6897_filtered(XGZP6897_RANGE_010K, &p_pa, &t_c, true);
+        }
+    }
+    else if (strcmp(argv[0], "p3") == 0)
+    {
+        /* Calibaration 적용 */
+        if (argc >= 2 && strcmp(argv[1], "offset") == 0)
+        {
+            set_calibration_xgzp6847(XGZP6847_RANGE_001MPGPN);
+        }
+        else
+            ret = read_xgzp6847_filtered(XGZP6847_RANGE_001MPGPN, &p_pa, &t_c, true);
+    }
+    else
+        ret = -EINVAL;
+
     if (ret == 0)
     {
         float p_mmH2O = p_pa / 9.80665f; /* 필요 시 mmH2O로 변환 */
-        LOG_INF("XGZP6897D: P = %.3f Pa (%.3f mmH2O), T = %.2f C",
-                (double)p_pa, (double)p_mmH2O, (double)t_c);
+        LOG_INF("XGZP6897D: P = %.3f Pa (%.3f mmH2O), T = %.2f C", (double)p_pa, (double)p_mmH2O, (double)t_c);
     }
     else
     {
@@ -477,6 +717,139 @@ static int cmd_xgzp_read(const struct shell *sh, size_t argc, char **argv)
     }
 
     return ret;
+}
+static int cmd_ssc_read(const struct shell *sh, size_t argc, char **argv)
+{
+    float p_bar = 0.0f;
+    float p_mmH2O = 0.0f;
+    float p_pa = 0.0f;
+    float t_c = 0.0f;
+
+    int ret = 0;
+
+    /* Calibaration 적용 */
+    if (argc >= 2 && strcmp(argv[1], "offset") == 0)
+    {
+        /* intentionally empty */
+    }
+
+    if (strcmp(argv[0], "p4") == 0)
+    {
+        ret = read_ssc_filtered(SSCDJNN010BA2A3, &p_bar, &t_c, true);
+        p_pa = p_bar * 100000.0f; // Pa 단위로 변환
+    }
+    else if (strcmp(argv[0], "p5") == 0)
+    {
+        ret = read_ssc_filtered(SSCDJNN100MD2A3, &p_mmH2O, &t_c, true);
+        p_pa = p_mmH2O * 9.80665f; // Pa 단위로 변환
+    }
+    else if (strcmp(argv[0], "p6") == 0)
+    {
+        ret = read_ssc_filtered(SSCDJNN002ND2A3, &p_mmH2O, &t_c, true);
+        p_pa = p_mmH2O * 9.80665f; // Pa 단위로 변환
+    }
+    else
+        ret = -EINVAL;
+
+    if (ret == 0)
+    {
+        float p_mmH2O = p_pa / 9.80665f; /* 필요 시 mmH2O로 변환 */
+        LOG_INF("SSC Pressure: P = %.3f Pa (%.3f mmH2O), T = %.2f C", (double)p_pa, (double)p_mmH2O, (double)t_c);
+    }
+    else
+    {
+        LOG_ERR("SSC Pressure read failed, err=%d", ret);
+    }
+
+    return ret;
+}
+
+static int cmd_sensor_read(const struct shell *sh, size_t argc, char **argv)
+{
+    struct item
+    {
+        uint8_t id;
+        const char *name;
+        const char *range;
+    } list[] = {
+        {SENSOR_ID_PRESSURE_AIR_FLOW_SSCDJNN002ND, "SSCDJNN002ND2A3", "±50.8 mmH2O"},
+        {SENSOR_ID_PRESSURE_AIR_HEADER_SSCDJNN010BA, "SSCDJNN010BA2A3", "0 ~ 10 bar"},
+        {SENSOR_ID_PRESSURE_OUTLET_SSCDJNN100MD, "SSCDJNN100MD2A3", "±1020 mmH2O"},
+        {SENSOR_ID_PRESSURE_AIR_FLOW_XGZP6897_001K, "XGZP6897D001KPDPN", "±100 mmH2O"},
+        {SENSOR_ID_PRESSURE_AIR_HEADER_XGZP6847_001MP, "XGZP6847D001MPGPN", "-1 ~ 10 bar"},
+        {SENSOR_ID_PRESSURE_INLET_XGZP6897_010K, "XGZP6897D010KPDPN", "±1000 mmH2O"},
+    };
+    const size_t list_cnt = ARRAY_SIZE(list);
+
+    if (argc == 1)
+    {
+        shell_print(sh, "diag p <id>  // Read pressure (mmH2O x100)");
+        shell_print(sh, "diag p cal <id>  // Calibrate sensor (zero offset)");
+        for (size_t i = 0; i < list_cnt; ++i)
+        {
+            shell_print(sh, "id=%u  part=%s  range=%s", list[i].id, list[i].name, list[i].range);
+        }
+        return 0;
+    }
+
+    if ((argc >= 3) && (strcmp(argv[1], "cal") == 0))
+    {
+        int id = atoi(argv[2]);
+        if (id < 0 || id > 255)
+        {
+            shell_error(sh, "invalid id: %s", argv[2]);
+            return -EINVAL;
+        }
+
+        int rc = Set_Calibration((uint8_t)id);
+        if (rc == 0)
+        {
+            const char *name = "unknown";
+            for (size_t i = 0; i < list_cnt; ++i)
+            {
+                if (list[i].id == (uint8_t)id)
+                {
+                    name = list[i].name;
+                    break;
+                }
+            }
+            shell_print(sh, "Calibration OK: id=%d (%s)", id, name);
+        }
+        else
+        {
+            shell_error(sh, "Calibration failed: id=%d err=%d", id, rc);
+        }
+        return rc;
+    }
+
+    /* 쉘 인자가 2개 이상이면 */
+    int id = atoi(argv[1]);
+    if (id < 0 || id > 255)
+    {
+        shell_error(sh, "invalid id: %s", argv[1]);
+        return -EINVAL;
+    }
+
+    int32_t v_x100 = Get_Sensor_Value((uint8_t)id);
+
+    /* 센서 정보 */
+    const char *pname = "unknown";
+    const char *prange = "";
+    for (size_t i = 0; i < list_cnt; ++i)
+    {
+        if (list[i].id == (uint8_t)id)
+        {
+            pname = list[i].name;
+            prange = list[i].range;
+            break;
+        }
+    }
+
+    /* 출력 */
+    int32_t abs_x100 = (v_x100 < 0) ? -v_x100 : v_x100;
+    shell_print(sh, "id=%d part=%s (%s): %s%ld.%02ld mmH2O  (%ld x100)", id, pname, prange, (v_x100 < 0) ? "-" : "", (long)(abs_x100 / 100), (long)(abs_x100 % 100), (long)v_x100);
+
+    return 0;
 }
 
 /* 서브커맨드 집합 */
@@ -490,6 +863,12 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_diag,
                                SHELL_CMD(gpio, &sub_gpio_root, "GPIO controls", NULL),
                                SHELL_CMD(imu, &sub_imu, "IMU LSM6DSO test", NULL),
                                SHELL_CMD(p1, NULL, "XGZP6897D001KPDPN (0x58) Read", cmd_xgzp_read),
+                               SHELL_CMD(p2, NULL, "XGZP6897D100KPDPN (0x58) Read", cmd_xgzp_read),
+                               SHELL_CMD(p3, NULL, "XGZP6847DC001MPGPN (0x6D) Read", cmd_xgzp_read),
+                               SHELL_CMD(p4, NULL, "SSCDJNN010BA2A3 (0x28) Read", cmd_ssc_read),
+                               SHELL_CMD(p5, NULL, "SSCDJNN100MD2A3 (0x28) Read", cmd_ssc_read),
+                               SHELL_CMD(p6, NULL, "SSCDJNN002ND2A3 (0x28) Read", cmd_ssc_read),
+                               SHELL_CMD(p, NULL, "Pressure sensor read alias", cmd_sensor_read),
                                SHELL_SUBCMD_SET_END);
 
 /* 루트 커맨드 등록 */

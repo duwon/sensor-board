@@ -5,6 +5,14 @@
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/atomic.h>
+#include <zephyr/fs/nvs.h>
+#include <zephyr/storage/flash_map.h>
+#include <zephyr/drivers/flash.h>
+
+
+LOG_MODULE_REGISTER(gpio_if, LOG_LEVEL_INF);
+
+//static struct nvs_fs fs;
 
 /** @file gpio_if.c
  * @brief 보드 GPIO 인터페이스 구현 파일
@@ -12,17 +20,17 @@
  * 버튼 인터럽트 처리, GPIO 초기 설정, LED/센서/RPU 제어 함수 등을 포함합니다.
  */
 
-LOG_MODULE_REGISTER(app_gpio, LOG_LEVEL_INF);
+extern struct k_work_delayable loop_work;
+
 
 /* ====== 버튼 인터럽트 판별 파라미터 ====== */
 /** @brief 소프트웨어 디바운스 시간 (ms) */
 #define BTN_DEBOUNCE_MS 20
 /** @brief 짧게 눌린 것으로 판정하는 최대 시간 (ms) */
-#define BTN_SHORT_MAX_MS 300
+#define BTN_SHORT_MS 2000
 /** @brief 길게 눌린 것으로 판정하는 최소 시간 (ms) */
-#define BTN_LONG_MIN_MS 2000
-/** @brief 길게 눌린 것으로 판정하는 최대 시간 (ms) */
-#define BTN_LONG_MAX_MS 5000
+#define BTN_LONG_MS  10000
+
 
 /** @brief 보드의 모든 GPIO 핀에 대한 설정 구조체 */
 static struct board_gpio g_cfg = {
@@ -45,6 +53,7 @@ static struct gpio_callback g_btn_cb;
 static int64_t g_btn_pressed_at_ms = -1;
 /** @brief 마지막으로 버튼 인터럽트가 발생한 시각 (디바운스용) */
 static int64_t g_btn_last_irq_ms = 0;
+
 
 /** @brief 버튼 엣지 인터럽트 콜백 (Active-Low)
  *
@@ -75,35 +84,41 @@ static void btn_gpio_cb(const struct device *dev, struct gpio_callback *cb, uint
     bool pressed = (level == 0);
 
     if (pressed)
-    {
-        /* 눌림 시작 */
-        g_btn_pressed_at_ms = now;
-    }
+		{
+        g_btn_pressed_at_ms = now;				/* 눌림 시작 */
+		}
     else
-    {
-        /* 떼었을 때만 판정 */
-        if (g_btn_pressed_at_ms >= 0)
-        {
+		{
+		if (g_btn_pressed_at_ms >= 0)			/* 떼었을 때만 판정 */
+			{
             int64_t held_ms = now - g_btn_pressed_at_ms;
+			
+			LOG_INF("Button: (%lld ms)\n", (long long)held_ms);
 
-            if (held_ms <= BTN_SHORT_MAX_MS)
-            {
-                atomic_set(&g_btn_evt, BTN_EVT_SHORT);
-                LOG_INF("Button: SHORT press (%lld ms)\n", (long long)held_ms);
-            }
-            else if (held_ms >= BTN_LONG_MIN_MS && held_ms <= BTN_LONG_MAX_MS)
-            {
-                atomic_set(&g_btn_evt, BTN_EVT_LONG);
-                LOG_INF("Button: LONG press (%lld ms)\n", (long long)held_ms);
-            }
-            else
-            {
-                /* 나머지 구간은  참고용 */
-                LOG_INF("Button: ignored (%lld ms)\n", (long long)held_ms);
-            }
-            g_btn_pressed_at_ms = -1;
-        }
-    }
+            if (held_ms >= 50 && held_ms <= 1000)
+				{
+				k_sleep(K_MSEC(300));
+				NVIC_SystemReset ();
+				}
+
+			if (held_ms >= BTN_SHORT_MS && held_ms < BTN_LONG_MS)
+				{
+				atomic_set(&g_btn_evt, BTN_EVT_SHORT);
+				}
+			else 
+				{
+				if (held_ms >= BTN_LONG_MS)
+					atomic_set(&g_btn_evt, BTN_EVT_LONG);
+				else
+					atomic_set(&g_btn_evt, BTN_EVT_NONE);
+				}
+
+			g_btn_pressed_at_ms = -1;
+
+			k_work_cancel_delayable(&loop_work);		// 이전 슬립 시간 취소
+			k_work_schedule(&loop_work, K_NO_WAIT);		// 바로 깨어남
+			}
+		}
 }
 
 /** @brief 발생한 버튼 이벤트 상태를 가져오고 상태를 초기화합니다.
@@ -169,6 +184,9 @@ int board_gpio_init(void)
     gpio_init_callback(&g_btn_cb, btn_gpio_cb, BIT(g_cfg.btn.pin));
     gpio_add_callback(g_cfg.btn.port, &g_btn_cb);
 
+
+	pm_device_wakeup_enable(g_cfg.btn.port, true);
+
     return 0;
 }
 
@@ -212,3 +230,58 @@ bool soh_alarm_get(void) { return gpio_pin_get_dt(&g_cfg.soh_alarm); }
  * @return 핀 레벨 상태 (0 또는 1)
  */
 bool soh_ok_get(void) { return gpio_pin_get_dt(&g_cfg.soh_ok); }
+
+
+
+
+extern struct flash_data cfg;
+
+#define FLASH_OFFSET   0x7A000   // 기본 storage 영역
+#define FLASH_SIZE     0x1000    // 4KB만 사용
+
+static const struct device *flash_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_flash_controller));
+
+//---------------------------------------------------------------------
+int flash_init(void)
+{
+    if (!device_is_ready(flash_dev)) 
+		{
+        LOG_ERR("FLASH not ready");
+        return -ENODEV;
+		}
+    return 0;
+}
+//----------------------------------------------------------------------------
+int flash_write_data(void)
+{
+    int rc = flash_erase(flash_dev, FLASH_OFFSET, FLASH_SIZE);
+    if (rc) {
+        printk("flash erase failed: %d", rc);
+        return rc;
+    }
+
+    cfg.index = FLASH_MAGIC;
+    rc = flash_write(flash_dev, FLASH_OFFSET, &cfg, sizeof(cfg));
+    if (rc) printk ("flash write failed: %d", rc);
+	
+   return rc;
+}
+//----------------------------------------------------------------------------
+// 플래시에서 구조체 읽기
+int flash_read_data(void)
+{
+    int rc = flash_read(flash_dev, FLASH_OFFSET, &cfg, sizeof(cfg));
+    if (cfg.index != FLASH_MAGIC) 
+		{
+        printk("flash read failed: %d", rc);
+		cfg.bat_value = 999;
+		cfg.z = cfg.y = cfg.x = 0.21f;
+		flash_write_data ();
+		}
+
+    printk ("\r\nFlash read OK     (Bat=%u (%.2f, %.2f, %.2f)\r\n",
+            cfg.bat_value,  
+			(double)cfg.x, (double)cfg.y, (double)cfg.z);
+    return 0;
+}
+

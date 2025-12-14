@@ -4,10 +4,15 @@
 #include <zephyr/drivers/gpio.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <zephyr/fs/nvs.h>
+#include <zephyr/storage/flash_map.h>
+#include <zephyr/logging/log.h>
 
 /** @file gpio_if.h
  * @brief 보드 GPIO 인터페이스 정의 파일
  */
+
+
 
 /** @enum btn_evt_t
  * @brief 버튼 눌림 이벤트 유형
@@ -32,6 +37,21 @@ struct board_gpio
     const struct gpio_dt_spec soh_alarm; /**< SOH 알람 입력 핀 */
     const struct gpio_dt_spec soh_ok;    /**< SOH OK 입력 핀 */
 };
+
+struct flash_data
+{
+	uint32_t index;
+	uint32_t bat_value;
+	float x;
+	float y;
+	float z;
+};
+
+
+#define FLASH_MAGIC    0x1234     // 데이터 검증용
+
+
+
 
 /** @brief 보드의 모든 GPIO 핀들을 초기화하고 버튼 인터럽트를 설정합니다.
  * @see board_gpio_init

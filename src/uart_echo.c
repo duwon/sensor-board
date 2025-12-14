@@ -8,6 +8,11 @@ LOG_MODULE_REGISTER(uart_echo, LOG_LEVEL_INF);
 #define UART_NODE DT_CHOSEN(zephyr_console)
 const struct device *const uart_dev = DEVICE_DT_GET(UART_NODE);
 
+
+
+#if defined(CONFIG_SERIAL) && DT_NODE_HAS_STATUS(DT_NODELABEL(uart0), okay)
+
+
 static void uart_echo_thread(void *a, void *b, void *c)
 {
     ARG_UNUSED(a); ARG_UNUSED(b); ARG_UNUSED(c);
@@ -50,3 +55,6 @@ static int uart_echo_init(void)
     return 0;
 }
 SYS_INIT(uart_echo_init, APPLICATION, 50);
+
+
+#endif

@@ -73,6 +73,22 @@
             bias-disable;
         };
     };
+	
+	i2c1_default: i2c1_default {
+        group1 {
+            // ★ 여기는 실제 회로에서 LTC3337 으로 나간 SCL/SDA 핀 번호로 맞춰야 함
+            psels = <NRF_PSEL(TWIM_SCL, 0, 28)
+                     NRF_PSEL(TWIM_SDA, 0, 2)>;
+        };
+    };
+
+    i2c1_sleep: i2c1_sleep {
+        group1 {
+            psels = <NRF_PSEL(TWIM_SCL, 0, 28)
+                     NRF_PSEL(TWIM_SDA, 0, 2)>;
+            low-power-enable;
+        };
+    };	
 };
 
 &i2c0 {
@@ -83,6 +99,19 @@
     pinctrl-names = "default", "sleep";
 };
 
+&i2c1 {
+    status = "okay";
+    clock-frequency = <I2C_BITRATE_STANDARD>;
+
+    pinctrl-0 = <&i2c1_default>;
+    pinctrl-1 = <&i2c1_sleep>;
+    pinctrl-names = "default", "sleep";
+};
+
+
+
 /* GPIO 컨트롤러 켜기 */
 &gpio0 { status = "okay"; };
 &gpio1 { status = "okay"; };
+
+

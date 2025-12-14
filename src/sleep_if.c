@@ -1,4 +1,11 @@
-// sleep_if.c
+/**
+ * @file
+ * @brief 저전력 Sleep/ Wake 인터페이스 구현
+ *
+ * - I2C 라인 Hi-Z 설정/복구(pinctrl 상태 전환)
+ * - 인터페이스 전원(센서/RPU/LED) 정지 및 재기동 순서 관리
+ * - 간단 idle sleep 기반으로 주기적 웨이크업 시퀀스 지원
+ */
 #include "sleep_if.h"
 #include "gpio_if.h"
 #include <zephyr/kernel.h>
@@ -68,18 +75,27 @@ void i2c_bus_restore_default(void)
         (void)i2c0_apply_state(PINCTRL_STATE_DEFAULT, "default");
 }
 
-/* x초 후 깨어남 (간단 idle sleep 버전) */
+/**
+ * @brief 지정된 시간 후 깨어나도록 간단 idle sleep 진입
+ *
+ * 인터페이스 전원을 내리고 I2C 라인을 Hi-Z로 둔 뒤, 루프에서 재스케줄링하여
+ * 지정된 시간 이후에 깨어나도록 합니다. 이 구현은 시스템 오프가 아닌 idle sleep 기반입니다.
+ *
+ * @param seconds 대기 시간(초)
+ * @retval 0 성공
+ */
 int Start_Sleep(uint32_t seconds)
 {
     /* 1) 인터페이스 전원/기능 다운 */
     i2c_bus_set_hi_z(); // I2C 라인 Hi-Z 설정
-    board_led_set(false);
+    nrfx_twi_uninit();
+	board_led_set(false);
     power_sensor(false);
     power_rpu(false);
 
     /* 2) 현재 모드(레거시/EXT)에 맞춰 광고 정지 */
 
-    LOG_INF("Enter sleep ~%us", seconds);
+    LOG_INF("Sleep ~%us", seconds);
 
     /* 3) 슬립 대기: 이 버전은 시스템오프가 아닌 idle 슬립 */
     // k_sleep(K_SECONDS(seconds)); // loop_fn()에서 다시 스케줄링
@@ -88,15 +104,23 @@ int Start_Sleep(uint32_t seconds)
     return 0;
 }
 
+/**
+ * @brief Sleep에서 복귀하여 인터페이스를 재기동
+ *
+ * RPU → 센서 전원 순으로 켠 뒤, I2C 라인을 기본 핀 상태로 복구합니다.
+ *
+ * @retval 0 성공
+ */
 int Wakeup(void)
 {
-    /* 1) 전원 레일 복구 (순서/안정화 지연) */
-    power_rpu(true);
-    k_sleep(K_MSEC(2)); // RPU 안정화
-    power_sensor(true);
-    k_sleep(K_MSEC(5));        // 센서 안정화
+    printk("\r\nWakeup\r\n");
+   
     i2c_bus_restore_default(); // I2C 라인 복구
+    nrfx_twi_init();
+	power_sensor(true);
+    k_sleep(K_MSEC(10));        // 센서 안정화
 
-    LOG_INF("Woken up, interfaces re-enabled");
+
+//  LOG_INF("Interfaces re-enabled");
     return 0;
 }
