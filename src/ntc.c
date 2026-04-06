@@ -292,7 +292,11 @@ int read_ntc(int16_t *temperature)
     if (t_cx100 < INT16_MIN)
         t_cx100 = INT16_MIN;
 
-    *temperature = (int16_t)t_cx100;
+    
+	if (t_cx100 == 0) 
+		*temperature = -1;
+	else
+		*temperature = (int16_t)t_cx100;
     return 0;
 }
 

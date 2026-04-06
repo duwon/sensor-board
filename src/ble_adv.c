@@ -8,20 +8,18 @@
 
 LOG_MODULE_REGISTER(ble_adv, LOG_LEVEL_INF);
 
-/** @brief 1회 광고 지속 시간 (200ms) */
-#define ADV_ONE_SHOT_MS K_MSEC(200)
-/** @brief 최소 광고 인터벌 (100ms = 0x00A0 * 0.625ms) */
-#define ADV_INT_MIN 0x00A0
-/** @brief 최대 광고 인터벌 (100ms = 0x00A0 * 0.625ms) */
-#define ADV_INT_MAX 0x00A0
-/** @brief 스캔 응답 지속 시간 5분 */
-#define SCAN_RSP_DURATION_MS (5UL * 60UL * 100UL)
+#define ADV_ONE_SHOT_MS K_MSEC(200)					/** @brief 1회 광고 지속 시간 (200ms) */
+#define ADV_INT_MIN 0x0020   						/** @brief 최소 광고 인터벌 (20ms = 0x0020 * 0.625ms) */
+#define ADV_INT_MAX 0x0020   						/** @brief 최대 광고 인터벌 (20ms = 0x0020 * 0.625ms) */
+#define SCAN_RSP_DURATION_MS (5UL * 60UL * 100UL)   /** @brief 스캔 응답 지속 시간 5분 */
 
 static const struct bt_le_adv_param ext_adv_param = {
     .id = BT_ID_DEFAULT,
     .sid = 0, /* Advertising Set ID */
     .secondary_max_skip = 0,
-    // .options = (BT_LE_ADV_OPT_EXT_ADV | BT_LE_ADV_OPT_USE_IDENTITY | BT_LE_ADV_OPT_USE_TX_POWER | BT_LE_ADV_OPT_NO_2M),
+//	.secondary_max_phy = BT_GAP_LE_PHY_1M, // 1Mbps로 명시
+//  .secondary_min_phy = BT_GAP_LE_PHY_1M, // 1Mbps로 명시
+//  .options = (BT_LE_ADV_OPT_EXT_ADV | BT_LE_ADV_OPT_USE_IDENTITY | BT_LE_ADV_OPT_USE_TX_POWER | BT_LE_ADV_OPT_NO_2M),
     .options = (BT_LE_ADV_OPT_EXT_ADV | BT_LE_ADV_OPT_USE_IDENTITY),
     .interval_min = ADV_INT_MIN,
     .interval_max = ADV_INT_MAX,
@@ -53,12 +51,17 @@ static struct bt_data sr[] = {
 
 static struct bt_le_ext_adv *adv;
 extern struct Status Stat;
+
 //--------------------------------------------------------------------
 int Ble_Start(void)
 {
-    int err = 0;
+int err = 0;
+struct bt_le_ext_adv_start_param sp = {
+    .timeout = 0,       // 시간 제한 없음
+    .num_events = 15,   // 광고 이벤트 15번 송신 후 자동 종료		20msec * 15회 = 300msec 전송
+};
 
-    err = bt_le_ext_adv_start(adv, BT_LE_EXT_ADV_START_DEFAULT);
+    err = bt_le_ext_adv_start(adv, &sp);
     if (err)
     {
         LOG_ERR("Failed to start extended advertising (err %d)", err);
@@ -139,13 +142,21 @@ int err;
         if (err) LOG_ERR("Failed to delete adv (err %d)", err);
 
         // (EXT_ADV | SCANNABLE) 유지
-        err = bt_le_ext_adv_create(BT_LE_ADV_PARAM(
-                                       BT_LE_ADV_OPT_EXT_ADV | BT_LE_ADV_OPT_SCANNABLE | BT_LE_ADV_OPT_USE_IDENTITY,
-                                       BT_GAP_ADV_FAST_INT_MIN_2,
-                                       BT_GAP_ADV_FAST_INT_MAX_2,
-                                       NULL),
-                                   NULL, &adv);
+		
+		
+		struct bt_le_adv_param adv_param = {
+            .id = BT_ID_DEFAULT,
+            .sid = 0,
+            .secondary_max_skip = 0,
+//          .secondary_max_phy = BT_GAP_LE_PHY_1M, // Secondary PHY를 1M로 고정
+//          .secondary_min_phy = BT_GAP_LE_PHY_1M, // Secondary PHY를 1M로 고정
+            .options = (BT_LE_ADV_OPT_EXT_ADV | BT_LE_ADV_OPT_SCANNABLE | BT_LE_ADV_OPT_USE_IDENTITY | BT_LE_ADV_OPT_NO_2M),
+            .interval_min = BT_GAP_ADV_FAST_INT_MIN_2,
+            .interval_max = BT_GAP_ADV_FAST_INT_MAX_2,
+            .peer = NULL,
+        };
 
+        err = bt_le_ext_adv_create(&adv_param, NULL, &adv);		
         if (err)
 			{
             LOG_ERR("Failed to create adv set (err %d)", err);
@@ -184,7 +195,7 @@ int err;
         }
 
         err = bt_le_ext_adv_create(&ext_adv_param, NULL, &adv);
-        if (err)
+		if (err)
         {
             LOG_ERR("Failed to create advertising set (err %d)", err);
             return err;
@@ -198,95 +209,11 @@ int err;
     LOG_INF("BLE initialized. Device name: %s", CONFIG_BT_DEVICE_NAME);
     return 0;
 }
-
-/*
-//-------------------------------------------------------------------------
-int Init_Ble(ble_init_t init_type)
-{
-static struct bt_data sr[] = 
-		{
-        BT_DATA(BT_DATA_NAME_COMPLETE, CONFIG_BT_DEVICE_NAME, (sizeof(CONFIG_BT_DEVICE_NAME) - 1)),
-        BT_DATA(BT_DATA_MANUFACTURER_DATA, mfg_data_sr, sizeof(mfg_data_sr)),
-		};
-
-
-    switch (init_type)
-    {
-    case BLE_SCAN_RESPONSE:
-        LOG_INF("BLE Scan Response Initialization...");
-        err = bt_le_ext_adv_stop(adv);
-        if (err) LOG_ERR("Failed to stop adv (err %d)", err);
-
-        err = bt_le_ext_adv_delete(adv);
-        if (err) LOG_ERR("Failed to delete adv (err %d)", err);
-
-        // (EXT_ADV | SCANNABLE) 유지
-        err = bt_le_ext_adv_create(BT_LE_ADV_PARAM(
-                                       BT_LE_ADV_OPT_EXT_ADV | BT_LE_ADV_OPT_SCANNABLE | BT_LE_ADV_OPT_USE_IDENTITY,
-                                       BT_GAP_ADV_FAST_INT_MIN_2,
-                                       BT_GAP_ADV_FAST_INT_MAX_2,
-                                       NULL),
-                                   NULL, &adv);
-
-        if (err)
-			{
-            LOG_ERR("Failed to create adv set (err %d)", err);
-            return err;
-			}
-
-        mfg_data_sr[4] = Stat.Model;
-		
-		err = bt_le_ext_adv_set_data(adv, NULL, 0, sr, ARRAY_SIZE(sr));  // ad 없음
-        if (err)
-			{
-            LOG_ERR("Failed to set Scan Response adv data (err %d)", err);
-            return err;
-			}
-
-        err = bt_le_ext_adv_start(adv, BT_LE_EXT_ADV_START_PARAM(SCAN_RSP_DURATION_MS, 0));
-        if (err)
-			{
-            LOG_ERR("Failed to start Scan Response adv (err %d)", err);
-            return err;
-			}
-        break;
-
-    case BTN_ADV:
-        LOG_INF("Creating advertising set...");
-
-        err = bt_le_ext_adv_stop(adv);
-        if (err)
-        {
-            LOG_ERR("Failed to stop adv (err %d)", err);
-        }
-        err = bt_le_ext_adv_delete(adv);
-        if (err)
-        {
-            LOG_ERR("Failed to delete adv (err %d)", err);
-        }
-
-        err = bt_le_ext_adv_create(&ext_adv_param, NULL, &adv);
-        if (err)
-        {
-            LOG_ERR("Failed to create advertising set (err %d)", err);
-            return err;
-        }
-        break;
-
-    default:
-        break;
-    }
-
-    LOG_INF("BLE initialized. Device name: %s", CONFIG_BT_DEVICE_NAME);
-    return 0;
-}
-*/
 //----------------------------------------------------------------------------
 int Tx_Ble(const uint8_t *mfg, size_t mfg_len)
 {
     int err = 0;
-    const struct bt_data ad =
-        BT_DATA(BT_DATA_MANUFACTURER_DATA, mfg, mfg_len);
+    const struct bt_data ad = BT_DATA(BT_DATA_MANUFACTURER_DATA, mfg, mfg_len);
 
     err = bt_le_ext_adv_set_data(adv, &ad, 1, NULL, 0);
     if (err)
@@ -296,12 +223,10 @@ int Tx_Ble(const uint8_t *mfg, size_t mfg_len)
 		}
 
     err = Ble_Start();
-    if (err)  return err;
-
-    LOG_INF("Broadcasting for 200 ms...");
-    k_sleep(ADV_ONE_SHOT_MS);
-
-    err = Ble_Stop();
+//  if (err)  return err;
+//  LOG_INF("Broadcasting for 200 ms...");
+//  k_sleep(ADV_ONE_SHOT_MS);
+//  err = Ble_Stop();						// 15*20msec 보낸후 자동 Stop 하므로 생략
 
     return err;
 }
@@ -309,15 +234,15 @@ int Tx_Ble(const uint8_t *mfg, size_t mfg_len)
 void ble_setup (uint8_t phy, uint8_t scan)
 {
 int err;
-    const struct bt_data *sd_ptr;
-    size_t sd_len;
     struct bt_le_adv_param param = {
         .id               = BT_ID_DEFAULT,
         .sid              = 0,
         .secondary_max_skip = 0,
+//		.secondary_max_phy  = BT_GAP_LE_PHY_1M, 
+//      .secondary_min_phy  = BT_GAP_LE_PHY_1M,		
         .options          = BT_LE_ADV_OPT_EXT_ADV |
                             BT_LE_ADV_OPT_CONNECTABLE |
-                            BT_LE_ADV_OPT_USE_IDENTITY,
+                            BT_LE_ADV_OPT_USE_IDENTITY | BT_LE_ADV_OPT_NO_2M,
         .interval_min     = (phy == 1) ?
                               ADV_INT_MIN :
                               BT_GAP_ADV_SLOW_INT_MIN,
@@ -333,24 +258,37 @@ int err;
         return;
     }
 
-    printk("ADV start: PHY=%s, MODE=%s\n",
-           (phy  == 0) ? "Code8" : "1M",
-           (scan == 0) ? "ADV only" : "ADV+SCAN_RSP");
-
-    bt_le_ext_adv_stop(adv);
-
 	if (scan) phy = 1;							// code8 이면 phy 를 1M 로 변경
 
 	if (phy) 
-		param.options &= ~BT_LE_ADV_OPT_CODED;
-	else
-		param.options |= BT_LE_ADV_OPT_CODED;
+		{
+        // 1Mbps 모드일 때
+        param.options &= ~BT_LE_ADV_OPT_CODED;
+		param.options |= BT_LE_ADV_OPT_NO_2M;
+//      param.secondary_max_phy = BT_GAP_LE_PHY_1M; // 다시 한번 명시 (확신)
+//      param.secondary_min_phy = BT_GAP_LE_PHY_1M;
+		} 
+	else 
+		{
+        // Coded PHY 모드일 때
+        param.options |= BT_LE_ADV_OPT_CODED;
+		param.options &= ~BT_LE_ADV_OPT_NO_2M;
+//      param.secondary_max_phy = BT_GAP_LE_PHY_CODED;
+//      param.secondary_min_phy = BT_GAP_LE_PHY_CODED;
+		}
+	
+    printk("ADV start: PHY=%s, MODE=%s\n",
+           (phy  == 0) ? "Code8" : "1M",
+           (scan == 0) ? "ADV only" : "ADV+SCAN_RSP");
+		   
+    bt_le_ext_adv_stop(adv);
 	
 	if (scan)  
 		{
 		param.options |= BT_LE_ADV_OPT_SCANNABLE;
 		param.options &= ~BT_LE_ADV_OPT_CONNECTABLE;
 		Init_Ble(BLE_SCAN_RESPONSE);
+		return;
 		} 
 	else 
 		{
@@ -380,9 +318,11 @@ int ble_adv_ext_init(void)
         .id               = BT_ID_DEFAULT,
         .sid              = 0,
         .secondary_max_skip = 0,
+//		.secondary_max_phy  = BT_GAP_LE_PHY_1M,
+//      .secondary_min_phy  = BT_GAP_LE_PHY_1M,		
         .options          = BT_LE_ADV_OPT_EXT_ADV |
                             BT_LE_ADV_OPT_CONNECTABLE |
-                            BT_LE_ADV_OPT_USE_IDENTITY,
+                            BT_LE_ADV_OPT_USE_IDENTITY | BT_LE_ADV_OPT_NO_2M,
         .interval_min     = BT_GAP_ADV_FAST_INT_MIN_2,
         .interval_max     = BT_GAP_ADV_FAST_INT_MAX_2,
         .peer             = NULL,

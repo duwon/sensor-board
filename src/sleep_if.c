@@ -18,6 +18,9 @@ LOG_MODULE_REGISTER(sleep_if, LOG_LEVEL_INF);
 
 #define I2C0_NODE DT_NODELABEL(i2c0)
 
+
+extern uint64_t wakeup_time;
+
 /* devicetree의 i2c0 pinctrl 설정을 가져온다 */
 PINCTRL_DT_DEFINE(I2C0_NODE);
 static const struct pinctrl_dev_config *i2c0_pcfg = PINCTRL_DT_DEV_CONFIG_GET(I2C0_NODE);
@@ -86,21 +89,18 @@ void i2c_bus_restore_default(void)
  */
 int Start_Sleep(uint32_t seconds)
 {
-    /* 1) 인터페이스 전원/기능 다운 */
-    i2c_bus_set_hi_z(); // I2C 라인 Hi-Z 설정
-    nrfx_twi_uninit();
+uint64_t n; 
+
+    i2c_bus_set_hi_z(); 	// I2C 라인 Hi-Z 설정
+//  nrfx_twi_uninit();		// 소비전력 줄이는 효과없음 (함수 인자없어 에러남)
+	k_sleep(K_MSEC(10));    // 안정화
 	board_led_set(false);
     power_sensor(false);
     power_rpu(false);
 
-    /* 2) 현재 모드(레거시/EXT)에 맞춰 광고 정지 */
-
-    LOG_INF("Sleep ~%us", seconds);
-
-    /* 3) 슬립 대기: 이 버전은 시스템오프가 아닌 idle 슬립 */
+    n = k_uptime_get();
+	printk("%llu  Activetime=%llums  Sleep %us\r\n", n, n-wakeup_time, seconds);
     // k_sleep(K_SECONDS(seconds)); // loop_fn()에서 다시 스케줄링
-
-    /* 4) 복귀는 Wakeup()에서 수행 */
     return 0;
 }
 
@@ -113,14 +113,11 @@ int Start_Sleep(uint32_t seconds)
  */
 int Wakeup(void)
 {
-    printk("\r\nWakeup\r\n");
-   
-    i2c_bus_restore_default(); // I2C 라인 복구
-    nrfx_twi_init();
+//	printk("Wakeup\n");	
 	power_sensor(true);
+	k_sleep(K_MSEC(5));			// 안정화
+    i2c_bus_restore_default(); 	// I2C 라인 복구
+//  nrfx_twi_init();			// 소비전력 줄이는 효과없음 (함수 인자없어 에러남)
     k_sleep(K_MSEC(10));        // 센서 안정화
-
-
-//  LOG_INF("Interfaces re-enabled");
     return 0;
 }

@@ -45,7 +45,6 @@ struct Status
 	uint16_t Led_Interval;				// LED 브링크 간격
 	uint8_t  Sleep_Sec;					// sleep 시간
 	uint16_t Complete;					// ble 송신완료 후 sleep 진입확인 flag
-	uint16_t Bat_Timer;					// 600sec 마다 bat 체크 부팅후 처음은 100초 후 확인
 	uint16_t Model;	
 };
 
@@ -69,6 +68,8 @@ typedef enum
  * @return 0이면 성공, 음수이면 오류 코드.
  */
 int Init_Ble(ble_init_t init_type);
+int ble_adv_ext_init(void);
+void ble_setup (uint8_t phy, uint8_t scan);
 
 /** @brief Manufacturer 데이터를 설정하고 1회성 광고를 수행합니다.
  *

@@ -63,14 +63,14 @@ int32_t Get_Sensor_Value(uint8_t sensor_id)
     case SENSOR_ID_PRESSURE_AIR_FLOW_XGZP6897_001K: /* 압력(Air Flow) : XGZP6897D001KPDPN → Pa */
     {
         float p_pa = 0.0f;
-        (void)read_xgzp6897_filtered(XGZP6897_RANGE_001K, &p_pa, NULL, true);
+        if (read_xgzp6897_filtered(XGZP6897_RANGE_001K, &p_pa, NULL, true) < 0) return -1;
         float mmh2o_x100 = (p_pa / PA_PER_MMH2O) * 100.0f; /* mmH2O x100 */
         return (int32_t)mmh2o_x100;
     }
     case SENSOR_ID_PRESSURE_AIR_FLOW_SSCDJNN002ND:  /* 압력(Air Flow) : SSCDJNN002ND2A3 → mmH2O */
     {
         float p_mmh2o = 0.0f;
-        (void)read_ssc_filtered(SSCDJNN002ND2A3, &p_mmh2o, NULL, true);
+        if (read_ssc_filtered(SSCDJNN002ND2A3, &p_mmh2o, NULL, true) < 0) return -1;
         float mmh2o_x100 = p_mmh2o * 100.0f; /* mmH2O x100 */
         return (int32_t)mmh2o_x100;
     }
@@ -80,7 +80,7 @@ int32_t Get_Sensor_Value(uint8_t sensor_id)
     case SENSOR_ID_PRESSURE_OUTLET_XGZP6897_010K:
     {
         float p_pa = 0.0f;
-        (void)read_xgzp6897_filtered(XGZP6897_RANGE_010K, &p_pa, NULL, true);
+        if (read_xgzp6897_filtered(XGZP6897_RANGE_010K, &p_pa, NULL, true) < 0) return -1;
         float mmh2o_x100 = (p_pa / PA_PER_MMH2O) * 100.0f; /* mmH2O x100 */
         return (int32_t)mmh2o_x100;
     }
@@ -90,7 +90,7 @@ int32_t Get_Sensor_Value(uint8_t sensor_id)
     case SENSOR_ID_PRESSURE_OUTLET_SSCDJNN100MD:		// 6
     {
         float p_mmh2o = 0.0f;
-        (void)read_ssc_filtered(SSCDJNN100MD2A3, &p_mmh2o, NULL, true);
+        if (read_ssc_filtered(SSCDJNN100MD2A3, &p_mmh2o, NULL, true) < 0) return -1;
         float mmh2o_x100 = p_mmh2o * 100.0f; /* mmH2O x100 */
         return (int32_t)mmh2o_x100;
     }
@@ -99,14 +99,14 @@ int32_t Get_Sensor_Value(uint8_t sensor_id)
     case SENSOR_ID_PRESSURE_AIR_HEADER_XGZP6847_001MP: /* 13 압력(Air Header) : XGZP6847D001MPGPN → Pa */
     {
         float p_pa = 0.0f;
-        (void)read_xgzp6847_filtered(XGZP6847_RANGE_001MPGPN, &p_pa, NULL, true);
+        if (read_xgzp6847_filtered(XGZP6847_RANGE_001MPGPN, &p_pa, NULL, true) < 0) return -1;
         float bar_x100 = (p_pa / PA_PER_BAR) * 100.0f; /* bar x100 */
         return (int32_t)bar_x100;
     }
     case SENSOR_ID_PRESSURE_AIR_HEADER_SSCDJNN010BA:  /* 5 압력(Air Header) : SSCDJNN010BA2A3 → bar */
     {
         float p_bar = 0.0f;
-        (void)read_ssc_filtered(SSCDJNN010BA2A3, &p_bar, NULL, true);
+        if (read_ssc_filtered(SSCDJNN010BA2A3, &p_bar, NULL, true) < 0) return -1;
         float bar_x100 = p_bar * 100.0f; /* bar x100 */
         return (int32_t)bar_x100;
     }

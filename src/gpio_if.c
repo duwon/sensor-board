@@ -274,14 +274,11 @@ int flash_read_data(void)
     if (cfg.index != FLASH_MAGIC) 
 		{
         printk("flash read failed: %d", rc);
-		cfg.bat_value = 999;
-		cfg.z = cfg.y = cfg.x = 0.21f;
+		cfg.bat_value = 100;
 		flash_write_data ();
 		}
 
-    printk ("\r\nFlash read OK     (Bat=%u (%.2f, %.2f, %.2f)\r\n",
-            cfg.bat_value,  
-			(double)cfg.x, (double)cfg.y, (double)cfg.z);
+    printk ("\r\nFlash read OK     (Bat=%u\r\n",  cfg.bat_value);
     return 0;
 }
 

@@ -45,6 +45,7 @@ static int cmd_bat_init(const struct shell *sh, size_t argc, char **argv);
 static int cmd_bat_status(const struct shell *sh, size_t argc, char **argv);
 #endif
 
+uint8_t Bat_Percent ();
 /* ─────────────────────────────────────────────
  * I2C 전체 스캔 (0x03~0x77)
  *  - 트랜잭션 명확히 보이도록 write_read 사용 (0바이트 write 회피)
@@ -273,6 +274,10 @@ static int cmd_bat_status(const struct shell *sh, size_t argc, char **argv)
                 st.reg_a, st.reg_b, st.reg_c, st.reg_d, st.reg_e, st.reg_f, st.reg_g, st.reg_h);
     return 0;
 }
+
+
+
+
 
 /* --- NTC 온도 읽기 커맨드 ---------------------------------------- */
 static int cmd_ntc(const struct shell *sh, size_t argc, char **argv)

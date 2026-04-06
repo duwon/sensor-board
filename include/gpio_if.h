@@ -42,13 +42,10 @@ struct flash_data
 {
 	uint32_t index;
 	uint32_t bat_value;
-	float x;
-	float y;
-	float z;
 };
 
 
-#define FLASH_MAGIC    0x1234     // 데이터 검증용
+#define FLASH_MAGIC    0x2057     // 데이터 검증용
 
 
 

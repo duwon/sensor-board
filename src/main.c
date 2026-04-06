@@ -27,19 +27,6 @@ dip switch
     8   legacy 호환		0=신형, 1=구형
 	
 
-					센서코드
---------------------------------
-1=inlet 		   		0x01    
-2=outlet 		1		0x02
-3=air header 	2		0x03    
-4=air flow		3		0x04
-5=온도					0x11
-6=가속도				0x21
-7=속도					0x22
-
-
-LTC3337 (전력관리 0x64)
-
 dip sw (bit little endian 방식)
 0 1 2 3 4 5 6 7  
 ----- +------------ sub
@@ -67,22 +54,21 @@ dip sw (bit little endian 방식)
 1	1000	속도   16g
 
 
-
 en_sensor 	보드i2c, 외부i2c, ntc, 가속도
 en_dipsw	dipsw,   
 			bat칩 상시전원
 
-
 가속도는 10~1000Hz ms2  의 rms, peak 값으로
 속도는   10~1000Hz mmps 의 rms, peak 값으로 
+*/
 
- */
 #include <zephyr/bluetooth/bluetooth.h> 
 #include <zephyr/kernel.h>
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/sys/printk.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/atomic.h>
+#include <zephyr/drivers/watchdog.h> 
 #include "gpio_if.h"
 #include "dip_switch.h"
 #include "ltc3337.h"
@@ -94,6 +80,7 @@ en_dipsw	dipsw,
 #include "xgzp6897d.h"
 #include "ntc.h"
 #include "lsm6dso.h"
+#include "wdt.h" 
 
 
 LOG_MODULE_REGISTER(app, LOG_LEVEL_INF);
@@ -126,19 +113,23 @@ static struct sensor_adv_data_t mfg_data = {    // 0xFFFF를 Little Endian으로
 
 struct k_work_delayable loop_work;
 static struct k_work_delayable led_work;
-struct Status Stat = {0, 2, 500, 2, false, 500, 0};
+static struct k_work_delayable adv_stop_work;
+struct Status Stat = {0, 2, 500, 2, false, 0};
 struct flash_data cfg;					// bat 측정값(10분간격 확인), 가속도 캘리브레이션 값
 
+uint64_t wakeup_time;
 
 int flash_init(void);
 int flash_read_data();
 int flash_write_data();
 void Set_Value ();
 void get_sensor_data();
+void led_blink (int slp);
+static void adv_stop_fn(struct k_work *work);
+void set_led_err();
 /* --------------------------------- 디버그용 --------------------------------- */
 void debug_run_code(void)
 {
-
     // while (1) {
     power_sensor(true);
     k_sleep(K_MSEC(10)); // 센서 안정화
@@ -172,11 +163,8 @@ void debug_run_code(void)
 //--------------------------------------------------------------------------
 static void led_fn(struct k_work *w)
 {
-//	printk("ledfs = %d\n", Stat.Led_Cnt);
-
     if (app_is_hold()) // BLE 일시정지 상태, 디버깅용
     {
-		printk("hold=%d\n", app_is_hold());
 		k_work_reschedule(&led_work, K_MSEC(50));
         return;
     }
@@ -194,16 +182,14 @@ static void led_fn(struct k_work *w)
 		{
 		if (Stat.Complete)
 			{
-			Start_Sleep(Stat.Sleep_Sec);
 			k_work_schedule(&loop_work, K_SECONDS(Stat.Sleep_Sec));
+ 			Start_Sleep(Stat.Sleep_Sec);
 			}
 		else
 			{
-//			printk("false\n");	
 			k_work_reschedule(&led_work, K_MSEC(50));
 			}
 		}
-		
 }
 /**
  7 6 5  4   3 2 1 0 
@@ -214,18 +200,38 @@ static void led_fn(struct k_work *w)
  2		interval  Bat 1=30, 0=10,  AC 1=5, 0=1
  1		power	  0=AC,  1=Bat	
  0		legacy
+ 
+
+
+1000  속소16g
+0100  가속도16
+1100  ntc
+0010  SSCDJNN002ND2A3
+1010  SSCDJNN010BA2A3
+0110  SSCDJNN100MD2A3
+1110  SSCDJNN100MD2A3
+1001  속도4
+0101  가속도4
+0011  XGZP6897D001KPDPN
+1011  XGZP6847DC001MPGPN
+0111  XGZP6897D010KPDPN
+1111  XGZP6897D010KPDPN
+
+ 
+ 
  */
 //---------------------------------------------------------------------- 
 static void loop_fn(struct k_work *w)
 {
 uint8_t pass=false, scan=false;
+static uint16_t  Bat_Timer = 0;
 
-    Wakeup();
+	wdt_feed_dog();     /* ← 루프 진입 즉시 feed (가장 중요) */
 
+	wakeup_time = k_uptime_get();
+	printk("\r\n\r\n%llu Wakeup ID=%u \r\n", wakeup_time, Stat.Dipsw & 0x0f);    
 
-//	Get_Switch(&Stat.Dipsw, NULL);
-
-
+	Wakeup();
 
 	btn_evt_t btn = Get_BtnStatus();
 	
@@ -256,102 +262,101 @@ uint8_t pass=false, scan=false;
 	
 	k_work_reschedule(&led_work, K_MSEC(10));		// 바로 실행
 
-/*
-	Get_Switch(&raw, NULL);			// 딥스위치 확인용 디버그
-//1  1  1  0   0  011		0xe3  
-//la pw in ph  s  mdel
-printk ("model=%x  phy=%d  per=%d  pwr=%d  latency=%d\r\n", 
-		(raw & 0x0f),
-		(raw & 0x10)>>4, 		// phy
-		(raw & 0x20)>>5, 		// inter
-		(raw & 0x40)>>6, 		// pwr
-		(raw & 0x80)>>7);			// latancy
-*/	
-	
 	ble_setup ((Stat.Dipsw&0x10)>>4, scan);		// phy 0=code8, 1=1M
 
 	if (pass || scan) goto Sleep_start;
 
     get_sensor_data();
-
+	
 //    debug_run_code();
 
-    /* 2) Manufacturer 패킷 빌드 (정적 구조체 업데이트) */
-    if (app_is_hold()) // BLE 정지, 디버깅용
-    {
-        k_sleep(K_MSEC(50));
-        return;
-    }
+    if (!app_is_hold()) // BLE 정지, 디버깅용
+		{
+		Tx_Ble((const uint8_t *)&mfg_data, sizeof(mfg_data));
+		 k_work_reschedule(&adv_stop_work, K_SECONDS(5));
+		}
 
-    Tx_Ble((const uint8_t *)&mfg_data, sizeof(mfg_data));
-
-	Stat.Bat_Timer += Stat.Sleep_Sec;
-	if (Stat.Bat_Timer > 600 && Stat.Dipsw & 0x40)	// 10분 마다 Bat 확인  (Bat 동작)
+	Bat_Timer += Stat.Sleep_Sec;
+	if (Bat_Timer > 30 && Stat.Dipsw & 0x40)	// 10분 마다 Bat 확인  (Bat 동작)
 		{
 		printk ("Bat Checking\r\n");
-		Stat.Bat_Timer = 0;
+		Bat_Timer = 0;
 		Stat.Led_Cnt = 0;							// 바로 sleep 진입토록
-	
-		++cfg.bat_value;		//  = 99;			// LTC3337 등을 통해 실제 배터리 잔량 업데이트
-		mfg_data.battery_percent = cfg.bat_value;	// 보고용 배터리 잔량계산		
+		mfg_data.battery_percent = Bat_Percent();	// 보고용 배터리 잔량계산	
 
-		flash_write_data ();						// flash 저장
+		if (mfg_data.battery_percent <= 10)
+		mfg_data.device_status |= 0x02;				// 베터리 10% 미만
 		}
 
 Sleep_start:
 	Stat.Complete = true;
-
-
+}
+//--------------------------------------------------------------------
+// 15회 전송후 자동종료해야하는 전송 시작시간이 늦어지면 중지가 안되 4초후 중지
+static void adv_stop_fn(struct k_work *work)
+{
+    Ble_Stop ();				
 }
 //-------------------------------------------------------------------
 int main(void)
 {
     
 	NRF_POWER->DCDCEN = 1;		// DCDC 기능 사용  항상on 
+	Stat.Led_Interval = 500;	// 처음 led 정상은 500 msec 1회
+	wdt_init();
 	
 	if (board_gpio_init())
 		{
 		printk("Err gpio\n");
-		goto Err;
+		set_led_err();
 		}
    
 	if (Get_Switch(&Stat.Dipsw, NULL))
 		{
 		printk("Err Dip Switch\n");
-		goto Err;
+		set_led_err();
 		}
 
     if (Init_Sensor())
 		{
 		printk("Err init_Sensor\n");
-		goto Err;
+		set_led_err();
 		}
 
-    ltc3337_init();
+	if (ltc3337_init ())
+		{
+//		printk("Err LTC1337 init\n");
+//		set_led_err();
+		}
 	
 	if (bt_enable(NULL))  
 		{
 		printk("Err bt_enable\n");
-		goto Err;
+		set_led_err();
 		}
     	
     if (ble_adv_ext_init())
 		{
 		printk("Err ble_adv_ext_init\n");
-		goto Err;
+		set_led_err();
 		}
     	
-	flash_init();					
-    flash_read_data();					// config Read
+	k_work_init_delayable(&adv_stop_work, adv_stop_fn);		
+//	flash_init();					
+//  flash_read_data();					// config Read
 
 	Set_Value();						// dipsw 값으로 광고정보 초기화
 		
     /* 디버깅 코드 실행 */
-    debug_run_startup();
+//    debug_run_startup();
 
 
-	
-
+	get_sensor_data();					// 센서가 정상인지 감지하여 LED 표시
+	if (mfg_data.device_status == 0x01) 
+		{	
+		printk("Sensor Err\n");
+		set_led_err();
+		}
 
 
     k_work_init_delayable(&led_work, led_fn);
@@ -359,13 +364,16 @@ int main(void)
 
     k_work_init_delayable(&loop_work, loop_fn);
     k_work_schedule(&loop_work, K_SECONDS(2));
-    return 0;
-
-Err:
-	Stat.Led_Cnt = 4;					// 에러시 2회 브링크 
-    k_work_init_delayable(&led_work, led_fn);
-    k_work_schedule(&led_work, K_MSEC(200));
+	return 0;
 }
+//--------------------------------------------------------------------------
+void set_led_err()
+{
+	Stat.Led_Interval = 200;
+	Stat.Led_Cnt = 4;
+}
+
+
 
 /*--------------------------------------------------------------------------
 dip sw (bit little endian 방식)
@@ -395,24 +403,13 @@ dip sw (bit little endian 방식)
 1	1000	속도   16g
 
 
-
-
-
-/*------------- test -------------------------------
-diag imu once acc 4g		0101		10
-diag imu once acc 16g		0100		2
-diag imu once vel 4g		1001		9
-diag imu once vel 16g		1000		1		*/
-
-
 extern lsm6dso_stats_t g_lsm6dso_stats;
 //----------------------- Sensor & Main Loop ---------------------------------*/
 void get_sensor_data()
 {
 static uint8_t check_cnt = 10;
-int ret;
 
-	mfg_data.value_presence_mask = 0x00;					// 어떤값이 유효한지 디폴
+	mfg_data.value_presence_mask = 0x01;					// 어떤값이 유효한지 디폴
 
 	switch (Stat.Dipsw & 0x0f)
 		{
@@ -462,6 +459,7 @@ int ret;
 		case 3	:										// ntc
 		case 11	:
 			mfg_data.sensor_value_1 = Get_Sensor_Value(3);
+			printk ("temp = %d\n", mfg_data.sensor_value_1);
 			break;
 		case 4  :										// air flow SSCDJNN002ND2A3 59,8 mmh2o		0x28
 			mfg_data.sensor_value_1 = Get_Sensor_Value(4);
@@ -492,36 +490,45 @@ int ret;
 			mfg_data.value_presence_mask = 0x00;					// 없으면 에러로		
 		}
 	
+/*
+bit 0 	wdt 리셋발생시
+bit 1   배터리 10% 이하
+bit 2   배터리 칩셋에러
+bit 3   센서연결불량
+bit 4   과열 80도 이상
+*/
 	if (mfg_data.sensor_value_1 < 0)
-		mfg_data.device_status = 0x01;			// err
+		mfg_data.device_status = 0x08;			// 센서에러 
 	else	
 		mfg_data.device_status = 0x00;			// 정상
 	
 	mfg_data.error_info    = 0x00;							// Error info
-	printf ("Dipsw = %d  Value=%d\r\n", Stat.Dipsw & 0x0f, mfg_data.sensor_value_1);
   
 	if (++check_cnt > 10)
 		{
 		check_cnt = 0;
 		Get_MCU_Temperature (&mfg_data.mcu_temperature);  	// MCU 온도 및 배터리 업데이트 (8-bit)
+		
+		if (mfg_data.mcu_temperature >= 80)
+			mfg_data.device_status |= 0x10;			// 과열
 		}
 }
 
-
-//0110
-// + ---- interval  Bat 1=30, 0=10,  AC 1=5, 0=1
-// +----- power     0=AC,  1=Bat	
-
+//  0000 1 sec
+//  0100 5	
+//  0010 10 
+//  0110 30 
+//    +------------ power 0=ac 1=bat
 //-------------------------------------------------------------------------------------
 void Set_Value ()
 {
-uint8_t v=0, percent;
+uint8_t v=0;
 
 	switch (Stat.Dipsw & 0x60)
 		{
-		case 0x00 : Stat.Sleep_Sec = 1; percent = 200;	break;		// 아답터 사용시 200%	
-		case 0x40 : Stat.Sleep_Sec = 5; percent = 200;	break;		// 아답터 사용시 200%	
-		case 0x20 : Stat.Sleep_Sec = 10; break;
+		case 0x00 : Stat.Sleep_Sec = 1; break;	
+		case 0x20 : Stat.Sleep_Sec = 5; break;	
+		case 0x40 : Stat.Sleep_Sec = 10; break;
 		case 0x60 : Stat.Sleep_Sec = 30; break;
 		}
 
@@ -545,5 +552,13 @@ uint8_t v=0, percent;
 	Stat.Model = v;
 	mfg_data.model_code = v;
 	mfg_data.structure_version = 0x01;
-	mfg_data.battery_percent = percent;				// 아답터이면 200, bat 이면 flash 저장값
+
+	if (Stat.Dipsw & 0x40)
+		mfg_data.battery_percent = cfg.bat_value;
+	else	
+		mfg_data.battery_percent = 200;		// ac 면 200%
 }
+
+
+
+

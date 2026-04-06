@@ -121,7 +121,7 @@ int Get_Switch(uint8_t *raw, struct dip_bits *parsed)
     /* 로그 출력 (디버그 용) */
     struct dip_bits log_bits;
     parse_bits(v, &log_bits);
-    LOG_INF("DIP=0x%02X model=%u phy=%u interval=%u pwr=%u legacy=%u",
+    printk("DIP=0x%02X model=%u phy=%u interval=%u pwr=%u legacy=%u\r\n",
             v, v&0x0f, log_bits.phy, log_bits.period, log_bits.pwr, log_bits.legacy);
 
 	power_rpu(false);

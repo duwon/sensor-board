@@ -115,6 +115,8 @@ static uint32_t ltc3337_ipk_to_ipeak_ma(uint8_t ipk)
     }
 }
 
+
+// 배터리 잔량확인시 호출,  안에 LTC3337_REG_B 는 배터리 연결시 최초 1회만 수행해야함
 int ltc3337_init(void)
 {
     int ret;
@@ -127,9 +129,7 @@ int ltc3337_init(void)
 
     /* C 레지스터에서 IPK 스트랩 확인 */
     ret = ltc3337_reg_read16(LTC3337_REG_C, &reg_c);
-    if (ret) {
-        return ret;
-    }
+    if (ret) return ret;
 
     g_ipk = (uint8_t)((reg_c >> LTC3337_C_IPK_SHIFT) & 0x7u);
 
@@ -139,15 +139,14 @@ int ltc3337_init(void)
     /* A: A[3:0]=M, A[15:8]=0xFF(알람 임계 최대 유지) */
     reg_a = (uint16_t)(0xFF00u | (g_m & (uint8_t)LTC3337_A_M_MASK));
     ret = ltc3337_reg_write16(LTC3337_REG_A, reg_a);
-    if (ret) {
-        return ret;
-    }
+    if (ret) return ret;
 
-    /* 부팅 시 적산 카운터 초기화 - 값 유지시 실행하지 않아야 함 */
-    ret = ltc3337_reg_write16(LTC3337_REG_B, 0x0000u);
-    if (ret) {
-        return ret;
-    }
+    //---------------------------------------------------------------
+	// 전원을 처음 입력하면 적산카운터값이 초기화되므로  필요없음  
+	//---------------------------------------------------------------
+//  ret = ltc3337_reg_write16(LTC3337_REG_B, 0x0000u);
+//  if (ret) return ret;
+	//---------------------------------------------------------------
 
     LOG_INF("LTC3337 init: IPK=%u, M=%u, FS=%u mAh", g_ipk, g_m, g_fs_mah);
     return 0;
@@ -157,16 +156,11 @@ int ltc3337_read_status(struct ltc3337_status *st)
 {
     int ret;
 
-    if (st == NULL) {
-        return -EINVAL;
-    }
-    if (!device_is_ready(i2c1)) {
-        return -ENODEV;
-    }
-
     /* 출력 버퍼 초기화(부분 실패 시 이전 값 잔류 방지) */
     *st = (struct ltc3337_status){0};
 
+    if (!device_is_ready(i2c1)) return -ENODEV;
+    
     /* 필수 레지스터 */
     ret = ltc3337_reg_read16(LTC3337_REG_A, &st->reg_a);
     if (ret) return ret;
@@ -230,4 +224,30 @@ int ltc3337_read_status(struct ltc3337_status *st)
     }
 
     return 0;
+}
+
+
+
+#define BATTERY_CAPACITY_MAH   19000u
+
+int Bat_Percent ()
+{
+struct ltc3337_status st;
+int rc;
+    
+	rc = ltc3337_read_status(&st);
+    if (rc) return rc;
+	
+    if (st.used_mah >= BATTERY_CAPACITY_MAH) return 0u;
+
+    uint32_t remain_mah = BATTERY_CAPACITY_MAH - st.used_mah;
+
+    /* 정수 반올림: (remain/capacity)*100 */
+    uint32_t pct = (remain_mah * 100u + (BATTERY_CAPACITY_MAH / 2u)) / BATTERY_CAPACITY_MAH;
+
+    if (pct > 100u) pct = 100u;
+    
+	printk ("Bat FS=%u mAh  Used=%u mAh  %d %%\r\n", st.fs_mah, st.used_mah, pct);
+	
+    return pct;
 }
