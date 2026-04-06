@@ -1,7 +1,14 @@
 /**
  * @file lsm6dso.c
- * @brief LSM6DSO IMU driver with 1024-sample FIFO capture and ISO 10816 style
- * band-limited vibration metrics.
+ * @brief LSM6DSO IMU 드라이버 (1024샘플/Active Polling/ISO 10816)
+ *
+ * @details
+ * 요구사항 문서의 계산 흐름을 반영한다.
+ * - 샘플링: 3.33kHz
+ * - 데이터: 1024개 (512개 x 2회 연속 읽기)
+ * - 모드: FIFO Continuous Mode + Active Polling (Busy Wait)
+ * - 분석: 10~1000Hz 대역, Hann Window, CMSIS-DSP RFFT
+ * - Peak: Equivalent Peak = True RMS * sqrt(2)
  */
 
 #include "lsm6dso.h"
@@ -33,24 +40,26 @@ LOG_MODULE_REGISTER(lsm6dso, LOG_LEVEL_INF);
 
 #define PRINT_TIMING false
 
-/* FIFO capture: 512 FIFO words per burst, captured twice for 1024 samples. */
+/* --- 1. 기본 설정 및 상수 (PDF 2~4페이지 참조) --- */
+
+/* FIFO 설정: 512 워드 단위로 2회 읽기 = 총 1024 샘플 */
 #define FIFO_WTM_WORDS 512
 #define FIFO_BYTES_PER_WORD 7
 #define FIFO_CAPTURE_CHUNKS 2
 #define FIFO_TOTAL_WORDS (FIFO_WTM_WORDS * FIFO_CAPTURE_CHUNKS)
 
-/* DSP constants from the PDF. */
+/* DSP 상수 */
 #define FFT_SIZE 1024
-#define SAMPLE_RATE_HZ 3333.0f
-#define BAND_BIN_START 3
-#define BAND_BIN_END 307
-#define HANN_AMPLITUDE_CORRECTION 1.633f
-#define EQ_PEAK_FACTOR 1.414213f
+#define SAMPLE_RATE_HZ 3333.0f           /* 샘플링 속도 3333Hz */
+#define BAND_BIN_START 3                 /* 10Hz 근처 (약 9.76Hz) */
+#define BAND_BIN_END 307                 /* 1000Hz 근처 (약 999.2Hz) */
+#define HANN_AMPLITUDE_CORRECTION 1.633f /* Hann amplitude correction */
+#define EQ_PEAK_FACTOR 1.414213f         /* sqrt(2) */
 #define G_CONST_MS2 9.80665f
-#define SENSITIVITY_4G_G_PER_LSB 0.000122f
-#define SENSITIVITY_16G_G_PER_LSB 0.000488f
+#define SENSITIVITY_4G_G_PER_LSB 0.000122f  /* 4g 모드 감도 (g/LSB) */
+#define SENSITIVITY_16G_G_PER_LSB 0.000488f /* 16g 모드 감도 (g/LSB) */
 
-/* I2C and register definitions. */
+/* I2C & Register Definitions */
 static const struct device *i2c0 = DEVICE_DT_GET(DT_NODELABEL(i2c0));
 #define LSM6DSO_I2C_ADDR 0x6A
 
@@ -86,13 +95,15 @@ static const struct device *i2c0 = DEVICE_DT_GET(DT_NODELABEL(i2c0));
 
 BUILD_ASSERT(FIFO_TOTAL_WORDS == FFT_SIZE, "FIFO capture must match FFT size");
 
-/* FIFO sample storage. */
+/* 전역 버퍼 (BSS) */
 static int16_t g_ax[FIFO_TOTAL_WORDS];
 static int16_t g_ay[FIFO_TOTAL_WORDS];
 static int16_t g_az[FIFO_TOTAL_WORDS];
+
+/* FIFO RAW 버퍼: 1회 읽기 분량 (512 * 7 = 3584 Bytes) */
 static uint8_t g_fifo_raw[FIFO_WTM_WORDS * FIFO_BYTES_PER_WORD];
 
-/* CMSIS-DSP working state. */
+/* CMSIS-DSP 작업 버퍼 */
 static arm_rfft_fast_instance_f32 g_rfft_inst;
 static bool g_rfft_ready = false;
 static bool g_hann_window_ready = false;
@@ -105,11 +116,23 @@ static float g_cal_offset_lsb[3] = {0.0f, 0.0f, 0.0f};
 static bool g_calc_acc = true;
 static bool g_calc_vel = true;
 
+/**
+ * @brief 현재 시간(밀리초) 반환
+ *
+ * @return uint32_t
+ */
 static inline uint32_t now_ms(void)
 {
   return k_uptime_get_32();
 }
 
+/**
+ * @brief 로그 타이밍 출력
+ *
+ * @param tag 태그 문자열
+ * @param t_start 시작 시점
+ * @param t_prev 이전 시점
+ */
 static inline void log_timing(const char *tag, uint32_t t_start, uint32_t *t_prev)
 {
   if (!PRINT_TIMING)
@@ -136,6 +159,8 @@ static int rd_u8(uint8_t reg, uint8_t *val)
   return i2c_write_read(i2c0, LSM6DSO_I2C_ADDR, &reg, 1, val, 1);
 }
 
+/* --- Helper Functions --- */
+
 static int lsm6dso_set_fs(lsm6dso_scale_t scale)
 {
   const bool use_16g = (scale == LSM6DSO_SCALE_16G);
@@ -146,6 +171,12 @@ static int lsm6dso_set_fs(lsm6dso_scale_t scale)
 
 static int lsm6dso_apply_fifo_base(void)
 {
+  /* FIFO 설정
+   * CTRL10: Timestamp off
+   * FIFO_CTRL3: BDR_XL=3.33kHz (0x09)
+   * FIFO_CTRL1/2: WTM=512 (0x200)
+   * FIFO_CTRL4: STOP_ON_WTM=0
+   */
   RC(wr_u8(REG_CTRL10_C, 0x00));
   RC(wr_u8(REG_FIFO_CTRL3, 0x09));
   RC(wr_u8(REG_FIFO_CTRL1, (uint8_t)(FIFO_WTM_WORDS & 0xFF)));
@@ -157,6 +188,7 @@ static int lsm6dso_apply_fifo_base(void)
 
 static int fifo_set_mode(uint8_t mode)
 {
+  /* ODR_FIFO=3.33kHz 적용 후 FIFO mode를 전환한다. */
   int rc = wr_u8(REG_FIFO_CTRL5, ODR_FIFO_3k33_SH);
   if (rc)
   {
@@ -168,6 +200,7 @@ static int fifo_set_mode(uint8_t mode)
 
 static int lsm6dso_prepare_rfft(void)
 {
+  /* CMSIS-DSP RFFT 인스턴스는 1회만 초기화한다. */
   if (g_rfft_ready)
   {
     return 0;
@@ -186,6 +219,7 @@ static int lsm6dso_prepare_rfft(void)
 
 static void lsm6dso_prepare_hann_window(void)
 {
+  /* Hann window 계수는 정적 버퍼에 1회 생성 후 재사용한다. */
   if (g_hann_window_ready)
   {
     return;
@@ -202,6 +236,7 @@ static void lsm6dso_prepare_hann_window(void)
 
 static int lsm6dso_prepare_dsp(void)
 {
+  /* FFT 인스턴스와 window 계수를 모두 준비한다. */
   int rc = lsm6dso_prepare_rfft();
   if (rc < 0)
   {
@@ -212,8 +247,10 @@ static int lsm6dso_prepare_dsp(void)
   return 0;
 }
 
+/* --- Initialization --- */
 int lsm6dso_init(void)
 {
+  /* 초기 설정 */
   RC(wr_u8(REG_CTRL3_C, CTRL3_C_BDU | CTRL3_C_IF_INC));
   RC(wr_u8(REG_CTRL9_XL, CTRL9_XL_I3C_DISABLE));
   RC(wr_u8(REG_CTRL2_G, 0x00));
@@ -228,6 +265,18 @@ int lsm6dso_init(void)
   return 0;
 }
 
+/**
+ * @brief 가속도 및 속도 DSP 계산 (ISO 규격/PDF 요구사항 반영)
+ *
+ * @details
+ * 축별로 다음 순서로 band-limited 결과를 계산한다.
+ * 1. Offset 제거 및 평균 제거
+ * 2. LSB -> g -> m/s^2 변환
+ * 3. Hann window 적용
+ * 4. CMSIS-DSP RFFT + magnitude 계산
+ * 5. 10~1000Hz 대역만 사용하여 RMS 계산
+ * 6. Equivalent Peak = True RMS * sqrt(2)
+ */
 static int compute_psd_acc_vel_axis(const int16_t *lsb, uint16_t n,
                                     float sensitivity_g_per_lsb, float offset_lsb,
                                     int16_t *acc_rms_x100,
@@ -325,6 +374,24 @@ static int compute_psd_acc_vel_axis(const int16_t *lsb, uint16_t n,
   return 0;
 }
 
+/**
+ * @brief 1024샘플 캡처 루틴
+ *
+ * @details
+ * FIFO를 BYPASS -> CONTINUOUS로 전환한 뒤 Active Polling으로
+ * 512샘플씩 2회 읽어서 총 1024샘플을 수집한다.
+ *
+ * 1. WHO_AM_I, FS, FIFO 기본 설정을 적용한다.
+ * 2. FIFO watermark 또는 FIFO sample count를 Busy Wait으로 감시한다.
+ * 3. REG_FIFO_DATA_OUT_TAG부터 512워드씩 2회 burst read 한다.
+ * 4. 가속도 태그(0x01/0x02)만 허용하고, mixed data는 에러로 종료한다.
+ * 5. 전체 대역(Broadband)의 RMS/Peak를 시간영역 기준으로 계산한다.
+ * 6. 10~1000Hz 대역의 RMS/Equivalent Peak를 PDF 계산식으로 산출한다.
+ *
+ * @param[out] out 통계 결과를 저장할 lsm6dso_stats_t 구조체 포인터
+ * @param scale 캡처 시 사용할 가속도 풀스케일
+ * @return 0 on success, -EINVAL if out is NULL, -EIO on capture/parsing failure
+ */
 int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t scale)
 {
   if (!out)
@@ -361,6 +428,7 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t scale)
   RC(fifo_set_mode(FIFO_MODE_CONTINUOUS));
   log_timing("fifo continuous start", t_start, &t_prev);
 
+  /* 1024개 샘플 수집 (512 * 2 chunks) */
   uint16_t total_parsed = 0;
 
   for (int chunk = 0; chunk < FIFO_CAPTURE_CHUNKS; ++chunk)
@@ -368,6 +436,9 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t scale)
     uint32_t chunk_wait_start = now_ms();
     bool ready = false;
 
+    /* 조건: WTM 플래그(Bit7) == 1 or DIFF >= 512
+     * Timeout : 512샘플 @ 3.33kHz = 약 154ms, 여유 포함 250ms
+     */
     while ((now_ms() - chunk_wait_start) < 250)
     {
       uint8_t st[2];
@@ -406,12 +477,14 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t scale)
 
     log_timing(chunk == 0 ? "chunk0 burst read" : "chunk1 burst read", t_start, &t_prev);
 
+    /* FIFO 구조: Tag(1) + X(2) + Y(2) + Z(2) = 7 Bytes */
     uint16_t base_idx = (uint16_t)(chunk * FIFO_WTM_WORDS);
     uint16_t acc_valid_count = 0;
     uint16_t non_acc_count = 0;
 
     for (size_t i = 0; i < sizeof(g_fifo_raw); i += FIFO_BYTES_PER_WORD)
     {
+      /* Tag 추출 [7:3] Sensor Tag */
       uint8_t tag_val = (uint8_t)((g_fifo_raw[i] >> 3) & 0x1F);
       if (tag_val != 0x01 && tag_val != 0x02)
       {
@@ -470,6 +543,7 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t scale)
 
   log_timing("capture complete (samples ready)", t_start, &t_prev);
 
+  /* 전체 대역 통계 (Raw RMS/Peak) */
   float sum_sq[3] = {0.0f, 0.0f, 0.0f};
   float max_val[3] = {0.0f, 0.0f, 0.0f};
 
@@ -491,6 +565,7 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t scale)
     }
   }
 
+  /* 전체 대역 결과 저장 */
   for (int axis = 0; axis < 3; ++axis)
   {
     out->peak_ms2_x100[axis] = MS2_X100(max_val[axis]);
@@ -499,6 +574,7 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t scale)
 
   log_timing("broadband rms/peak", t_start, &t_prev);
 
+  /* 10-1000Hz 대역 제한 통계 (FFT 기반) */
   for (int axis = 0; axis < 3; ++axis)
   {
     const int16_t *src = (axis == 0) ? g_ax : (axis == 1) ? g_ay : g_az;
@@ -536,6 +612,7 @@ int lsm6dso_capture_vel_only(lsm6dso_stats_t *out, lsm6dso_scale_t scale)
 
 int set_calibration_lsm6dso(lsm6dso_scale_t scale)
 {
+  /* 오프셋을 초기화한 상태에서 한 번 캡처하여 DC 바이어스를 저장 */
   g_cal_offset_lsb[0] = 0.0f;
   g_cal_offset_lsb[1] = 0.0f;
   g_cal_offset_lsb[2] = 0.0f;
@@ -586,6 +663,7 @@ void clear_calibration_lsm6dso(void)
 
 int lsm6dso_dump_regs(const struct shell *shell)
 {
+  /* 기존 레지스터 덤프 인터페이스 유지 */
   uint8_t v = 0;
 
   (void)rd_u8(REG_WHO_AM_I, &v);

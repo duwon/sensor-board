@@ -1,7 +1,7 @@
 /*
  * lsm6dso.h
  *
- * LSM6DSO 6축 IMU 센서 드라이버 (ISO 2954:2012 / 1024샘플 규격 반영)
+ * LSM6DSO 6축 IMU 센서 드라이버 (ISO 10816 / 1024샘플 규격 반영)
  */
 #pragma once
 #include <zephyr/kernel.h>
@@ -24,11 +24,15 @@ extern "C"
         int16_t peak_ms2_x100[3];
         int16_t rms_ms2_x100[3];
 
-        /* 10–1000 Hz 대역 제한 통계 (m/s^2 ×100) */
+        /* 10–1000 Hz 대역 제한 통계 (m/s^2 ×100)
+         * bl_peak_* 는 PDF식 Equivalent Peak = True RMS * sqrt(2) 값이다.
+         */
         int16_t bl_peak_ms2_x100[3];
         int16_t bl_rms_ms2_x100[3];
 
-        /* 10–1000 Hz 속도 (주파수 적분 기반) mm/s ×100 */
+        /* 10–1000 Hz 속도 (주파수 적분 기반) mm/s ×100
+         * bl_peak_* 는 PDF식 Equivalent Peak = True RMS * sqrt(2) 값이다.
+         */
         int16_t bl_peak_mmps_x100[3];
         int16_t bl_rms_mmps_x100[3];
 
