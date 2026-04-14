@@ -47,10 +47,10 @@ extern "C"
         LSM6DSO_SCALE_16G = 16,
     } lsm6dso_scale_t;
 
-    /* 초기화(ODR=3.33kHz, FS=±4g, FIFO=Continuous, WTM=512) */
+    /* 초기화(ODR=3.33kHz, FS=±4g, FIFO=Continuous, WTM=256) */
     int lsm6dso_init(void);
 
-    /* Active Polling으로 1024샘플(512x2) 캡처 후 통계 계산 */
+    /* Active Polling으로 1024샘플(256x4, 방법 B) 캡처 후 통계 계산 */
     int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t scale);
     int lsm6dso_capture_acc_only(lsm6dso_stats_t *out, lsm6dso_scale_t scale);
     int lsm6dso_capture_vel_only(lsm6dso_stats_t *out, lsm6dso_scale_t scale);

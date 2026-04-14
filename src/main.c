@@ -132,7 +132,7 @@ void debug_run_code(void)
 {
     // while (1) {
     power_sensor(true);
-    k_sleep(K_MSEC(10)); // 센서 안정화
+    k_sleep(K_MSEC(35)); // 센서 안정화
 
     float pressure_pa = 0.0f;
     float temperature_c = 0.0f;

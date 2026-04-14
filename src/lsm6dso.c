@@ -5,7 +5,7 @@
  * @details
  * 요구사항 문서의 계산 흐름을 반영한다.
  * - 샘플링: 3.33kHz
- * - 데이터: 1024개 (512개 x 2회 연속 읽기)
+ * - 데이터: 1024개 (256개 x 4회 연속 읽기)
  * - 모드: FIFO Continuous Mode + Active Polling (Busy Wait)
  * - 분석: 10~1000Hz 대역, Hann Window, CMSIS-DSP RFFT
  * - Peak: Equivalent Peak = True RMS * sqrt(2)
@@ -372,12 +372,12 @@ static int compute_psd_acc_vel_axis(const int16_t *lsb, uint16_t n,
  *
  * @details
  * FIFO를 BYPASS -> CONTINUOUS로 전환한 뒤 Active Polling으로
- * 512샘플씩 2회 읽어서 총 1024샘플을 수집한다.
+ * 256샘플씩 4회 읽어서 총 1024샘플을 수집한다 (방법 B: WTM=256 < FIFO 최대).
  *
  * 1. WHO_AM_I, FS, FIFO 기본 설정을 적용한다.
- * 2. FIFO watermark 또는 FIFO sample count를 Busy Wait으로 감시한다.
- * 3. REG_FIFO_DATA_OUT_TAG부터 512워드씩 2회 burst read 한다.
- * 4. 가속도 태그(0x01/0x02)만 허용하고, mixed data는 에러로 종료한다.
+ * 2. FIFO watermark(WTM_IA) 또는 DIFF_FIFO >= WTM 조건을 Busy Wait으로 감시한다.
+ * 3. REG_FIFO_DATA_OUT_TAG부터 256워드씩 4회 burst read 한다.
+ * 4. 가속도 태그(0x02=Accelerometer NC)만 허용하고, mixed data는 에러로 종료한다.
  * 5. 전체 대역(Broadband)의 RMS/Peak를 시간영역 기준으로 계산한다.
  * 6. 10~1000Hz 대역의 RMS/Equivalent Peak를 PDF 계산식으로 산출한다.
  *
@@ -442,6 +442,14 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t scale)
         return -EIO;
       }
 
+      /* FIFO_STATUS2 비트 검사 (DS Table 113)
+       * bit7=WTM_IA, bit6=OVR_IA, bit5=FULL_IA, bit3=OVR_LATCHED,
+       * bit[1:0]=DIFF_FIFO[9:8] */
+      if (st[1] & 0x48) /* OVR_IA(bit6) | OVR_LATCHED(bit3) */
+      {
+        LOG_ERR("FIFO overflow at chunk %d (STATUS2=0x%02x)", chunk, st[1]);
+        return -EIO;
+      }
       uint16_t diff = ((uint16_t)(st[1] & 0x03) << 8) | st[0];
       bool wtm = (st[1] & 0x80) != 0;
       if (wtm || diff >= FIFO_WTM_WORDS)

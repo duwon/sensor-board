@@ -643,6 +643,7 @@ static int cmd_imu_test(const struct shell *shell, size_t argc, char **argv)
     ARG_UNUSED(argv);
     cmd_ble_stop(shell, argc, argv);
     cmd_gpio_sen_on(shell, argc, argv);
+    k_sleep(K_MSEC(35)); /* DS Ton=35ms typ 충족 */
     cmd_imu_init(shell, argc, argv);
     return 0;
 }
