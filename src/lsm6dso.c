@@ -42,10 +42,10 @@ LOG_MODULE_REGISTER(lsm6dso, LOG_LEVEL_INF);
 
 /* --- 1. 기본 설정 및 상수 (PDF 2~4페이지 참조) --- */
 
-/* FIFO 설정: 512 워드 단위로 2회 읽기 = 총 1024 샘플 */
-#define FIFO_WTM_WORDS 512
+/* FIFO 설정: 256 워드 단위로 4회 읽기 = 총 1024 샘플 (방법 B: WTM < FIFO 최대 용량) */
+#define FIFO_WTM_WORDS 256
 #define FIFO_BYTES_PER_WORD 7
-#define FIFO_CAPTURE_CHUNKS 2
+#define FIFO_CAPTURE_CHUNKS 4
 #define FIFO_TOTAL_WORDS (FIFO_WTM_WORDS * FIFO_CAPTURE_CHUNKS)
 
 /* DSP 상수 */
@@ -67,7 +67,6 @@ static const struct device *i2c0 = DEVICE_DT_GET(DT_NODELABEL(i2c0));
 #define REG_FIFO_CTRL2 0x08
 #define REG_FIFO_CTRL3 0x09
 #define REG_FIFO_CTRL4 0x0A
-#define REG_FIFO_CTRL5 0x0B
 #define REG_WHO_AM_I 0x0F
 #define REG_CTRL1_XL 0x10
 #define REG_CTRL2_G 0x11
@@ -82,8 +81,7 @@ static const struct device *i2c0 = DEVICE_DT_GET(DT_NODELABEL(i2c0));
 #define CTRL3_C_IF_INC BIT(2)
 #define CTRL9_XL_I3C_DISABLE BIT(1)
 
-#define ODR_FIFO_3k33_SH ((uint8_t)(0x09 << 3))
-#define CTRL1_ODR_3k33 0xA0
+#define CTRL1_ODR_3k33 0x90
 #define FS_XL_4G (0x2 << 2)
 #define FS_XL_16G (0x1 << 2)
 
@@ -100,7 +98,7 @@ static int16_t g_ax[FIFO_TOTAL_WORDS];
 static int16_t g_ay[FIFO_TOTAL_WORDS];
 static int16_t g_az[FIFO_TOTAL_WORDS];
 
-/* FIFO RAW 버퍼: 1회 읽기 분량 (512 * 7 = 3584 Bytes) */
+/* FIFO RAW 버퍼: 1회 읽기 분량 (256 * 7 = 1792 Bytes) */
 static uint8_t g_fifo_raw[FIFO_WTM_WORDS * FIFO_BYTES_PER_WORD];
 
 /* CMSIS-DSP 작업 버퍼 */
@@ -174,13 +172,15 @@ static int lsm6dso_apply_fifo_base(void)
   /* FIFO 설정
    * CTRL10: Timestamp off
    * FIFO_CTRL3: BDR_XL=3.33kHz (0x09)
-   * FIFO_CTRL1/2: WTM=512 (0x200)
-   * FIFO_CTRL4: STOP_ON_WTM=0
+   * FIFO_CTRL1/2: WTM=256 (0x100) — WTM[7:0]=0x00, WTM8=1
+   *   WTM 필드는 9비트(0~511)이므로 512를 설정하면 0으로 오버플로우됨
+   *   256 word 단위로 4회 읽어 1024 샘플 확보 (방법 B)
+   * FIFO_CTRL4: STOP_ON_WTM=0 (Continuous mode 유지)
    */
   RC(wr_u8(REG_CTRL10_C, 0x00));
   RC(wr_u8(REG_FIFO_CTRL3, 0x09));
   RC(wr_u8(REG_FIFO_CTRL1, (uint8_t)(FIFO_WTM_WORDS & 0xFF)));
-  RC(wr_u8(REG_FIFO_CTRL2, (uint8_t)((FIFO_WTM_WORDS >> 8) & 0x0F)));
+  RC(wr_u8(REG_FIFO_CTRL2, (uint8_t)((FIFO_WTM_WORDS >> 8) & 0x01)));
   RC(wr_u8(REG_FIFO_CTRL4, 0x00));
 
   return 0;
@@ -188,13 +188,6 @@ static int lsm6dso_apply_fifo_base(void)
 
 static int fifo_set_mode(uint8_t mode)
 {
-  /* ODR_FIFO=3.33kHz 적용 후 FIFO mode를 전환한다. */
-  int rc = wr_u8(REG_FIFO_CTRL5, ODR_FIFO_3k33_SH);
-  if (rc)
-  {
-    return rc;
-  }
-
   return wr_u8(REG_FIFO_CTRL4, (uint8_t)(mode & 0x07));
 }
 
@@ -428,7 +421,7 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t scale)
   RC(fifo_set_mode(FIFO_MODE_CONTINUOUS));
   log_timing("fifo continuous start", t_start, &t_prev);
 
-  /* 1024개 샘플 수집 (512 * 2 chunks) */
+  /* 1024개 샘플 수집 (256 * 4 chunks, WTM=256) */
   uint16_t total_parsed = 0;
 
   for (int chunk = 0; chunk < FIFO_CAPTURE_CHUNKS; ++chunk)
@@ -436,8 +429,9 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t scale)
     uint32_t chunk_wait_start = now_ms();
     bool ready = false;
 
-    /* 조건: WTM 플래그(Bit7) == 1 or DIFF >= 512
-     * Timeout : 512샘플 @ 3.33kHz = 약 154ms, 여유 포함 250ms
+    /* 조건: WTM 플래그(FIFO_STATUS2 bit7) == 1 or DIFF >= WTM_WORDS
+     * Timeout : 256샘플 @ 3.33kHz = 약 77ms, 여유 포함 250ms
+     * DIFF_FIFO[9:8]는 FIFO_STATUS2 bit[1:0]에 위치 → 마스크 0x03
      */
     while ((now_ms() - chunk_wait_start) < 250)
     {
@@ -448,7 +442,7 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t scale)
         return -EIO;
       }
 
-      uint16_t diff = ((uint16_t)(st[1] & 0x0F) << 8) | st[0];
+      uint16_t diff = ((uint16_t)(st[1] & 0x03) << 8) | st[0];
       bool wtm = (st[1] & 0x80) != 0;
       if (wtm || diff >= FIFO_WTM_WORDS)
       {
@@ -465,7 +459,7 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t scale)
       return -EIO;
     }
 
-    log_timing(chunk == 0 ? "chunk0 wait WTM" : "chunk1 wait WTM", t_start, &t_prev);
+    log_timing("chunk wait WTM", t_start, &t_prev);
 
     uint8_t reg_addr = REG_FIFO_DATA_OUT_TAG;
     if (i2c_write_read(i2c0, LSM6DSO_I2C_ADDR, &reg_addr, 1,
@@ -475,7 +469,7 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t scale)
       return -EIO;
     }
 
-    log_timing(chunk == 0 ? "chunk0 burst read" : "chunk1 burst read", t_start, &t_prev);
+    log_timing("chunk burst read", t_start, &t_prev);
 
     /* FIFO 구조: Tag(1) + X(2) + Y(2) + Z(2) = 7 Bytes */
     uint16_t base_idx = (uint16_t)(chunk * FIFO_WTM_WORDS);
@@ -484,9 +478,10 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t scale)
 
     for (size_t i = 0; i < sizeof(g_fifo_raw); i += FIFO_BYTES_PER_WORD)
     {
-      /* Tag 추출 [7:3] Sensor Tag */
+      /* TAG_SENSOR[4:0] 추출 (DS Table 165): 0x02 = Accelerometer NC
+       * 0x01은 Gyroscope NC이므로 허용하지 않는다 */
       uint8_t tag_val = (uint8_t)((g_fifo_raw[i] >> 3) & 0x1F);
-      if (tag_val != 0x01 && tag_val != 0x02)
+      if (tag_val != 0x02)
       {
         non_acc_count++;
         continue;
@@ -526,7 +521,7 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t scale)
     }
 
     total_parsed += acc_valid_count;
-    log_timing(chunk == 0 ? "chunk0 parse" : "chunk1 parse", t_start, &t_prev);
+    log_timing("chunk parse", t_start, &t_prev);
   }
 
   out->n = total_parsed;

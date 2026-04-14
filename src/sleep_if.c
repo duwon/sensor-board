@@ -118,6 +118,6 @@ int Wakeup(void)
 	k_sleep(K_MSEC(5));			// 안정화
     i2c_bus_restore_default(); 	// I2C 라인 복구
 //  nrfx_twi_init();			// 소비전력 줄이는 효과없음 (함수 인자없어 에러남)
-    k_sleep(K_MSEC(10));        // 센서 안정화
+    k_sleep(K_MSEC(30));        // 센서 안정화: DS Ton=35ms typ, 5+30=35ms 충족
     return 0;
 }
