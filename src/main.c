@@ -119,6 +119,10 @@ struct flash_data cfg;					// bat 측정값(10분간격 확인), 가속도 캘�
 
 uint64_t wakeup_time;
 
+static uint32_t g_reset_reason;
+static bool g_need_report = false;
+
+
 int flash_init(void);
 int flash_read_data();
 int flash_write_data();
@@ -127,6 +131,22 @@ void get_sensor_data();
 void led_blink (int slp);
 static void adv_stop_fn(struct k_work *work);
 void set_led_err();
+
+//-------------------------------------------------------------------------
+static void check_reset_reason(void)
+{
+    g_reset_reason = NRF_POWER->RESETREAS;
+
+    // DOG 비트 확인 (WDT 리셋 여부)
+    if (g_reset_reason & POWER_RESETREAS_DOG_Msk)
+    {
+        g_need_report = true;
+    }
+
+    NRF_POWER->RESETREAS = g_reset_reason;
+	
+	mfg_data.device_status |= 0x01;			// WDT 발생
+}
 /* --------------------------------- 디버그용 --------------------------------- */
 void debug_run_code(void)
 {
@@ -233,6 +253,8 @@ static uint16_t  Bat_Timer = 0;
 
 	Wakeup();
 
+	check_reset_reason();						//  WDT 확인
+	
 	btn_evt_t btn = Get_BtnStatus();
 	
 	Stat.Complete = false;
@@ -276,12 +298,17 @@ static uint16_t  Bat_Timer = 0;
 		 k_work_reschedule(&adv_stop_work, K_SECONDS(5));
 		}
 
+	if (g_need_report)		// wdt 발생시 전송후 리셋	
+       {
+       k_msleep(100); 	// 안정성용 (옵션)
+       NVIC_SystemReset(); 	// ★ 여기서 리셋
+	   }
+
 	Bat_Timer += Stat.Sleep_Sec;
-	if (Bat_Timer > 30 && Stat.Dipsw & 0x40)	// 10분 마다 Bat 확인  (Bat 동작)
+	if (Bat_Timer > 70 && Stat.Dipsw & 0x40)	// 70sec 마다 Bat 확인  (Bat 동작)
 		{
 		printk ("Bat Checking\r\n");
 		Bat_Timer = 0;
-		Stat.Led_Cnt = 0;							// 바로 sleep 진입토록
 		mfg_data.battery_percent = Bat_Percent();	// 보고용 배터리 잔량계산	
 
 		if (mfg_data.battery_percent <= 10)
@@ -352,7 +379,7 @@ int main(void)
 
 
 	get_sensor_data();					// 센서가 정상인지 감지하여 LED 표시
-	if (mfg_data.device_status == 0x01) 
+	if (mfg_data.device_status & 0x08) 
 		{	
 		printk("Sensor Err\n");
 		set_led_err();
@@ -504,14 +531,14 @@ bit 4   과열 80도 이상
 	
 	mfg_data.error_info    = 0x00;							// Error info
   
-	if (++check_cnt > 10)
-		{
-		check_cnt = 0;
+//	if (++check_cnt > 10)
+//		{
+//		check_cnt = 0;
 		Get_MCU_Temperature (&mfg_data.mcu_temperature);  	// MCU 온도 및 배터리 업데이트 (8-bit)
 		
 		if (mfg_data.mcu_temperature >= 80)
 			mfg_data.device_status |= 0x10;			// 과열
-		}
+//		}
 }
 
 //  0000 1 sec

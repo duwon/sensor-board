@@ -12,7 +12,6 @@
  */
 
 #include "lsm6dso.h"
-
 #include <arm_math.h>
 #include <math.h>
 #include <string.h>
@@ -43,9 +42,9 @@ LOG_MODULE_REGISTER(lsm6dso, LOG_LEVEL_INF);
 /* --- 1. 기본 설정 및 상수 (PDF 2~4페이지 참조) --- */
 
 /* FIFO 설정: 256 워드 단위로 4회 읽기 = 총 1024 샘플 (방법 B: WTM < FIFO 최대 용량) */
-#define FIFO_WTM_WORDS 256
+#define FIFO_WTM_WORDS 128
 #define FIFO_BYTES_PER_WORD 7
-#define FIFO_CAPTURE_CHUNKS 4
+#define FIFO_CAPTURE_CHUNKS 8
 #define FIFO_TOTAL_WORDS (FIFO_WTM_WORDS * FIFO_CAPTURE_CHUNKS)
 
 /* DSP 상수 */
@@ -53,7 +52,7 @@ LOG_MODULE_REGISTER(lsm6dso, LOG_LEVEL_INF);
 #define SAMPLE_RATE_HZ 3333.0f           /* 샘플링 속도 3333Hz */
 #define BAND_BIN_START 3                 /* 10Hz 근처 (약 9.76Hz) */
 #define BAND_BIN_END 307                 /* 1000Hz 근처 (약 999.2Hz) */
-#define HANN_AMPLITUDE_CORRECTION 1.633f /* Hann amplitude correction */
+#define HANN_RMS_CORRECTION 1.633f       /* Hann RMS/energy correction for band-RMS calculation */
 #define EQ_PEAK_FACTOR 1.414213f         /* sqrt(2) */
 #define G_CONST_MS2 9.80665f
 #define SENSITIVITY_4G_G_PER_LSB 0.000122f  /* 4g 모드 감도 (g/LSB) */
@@ -99,7 +98,7 @@ static int16_t g_ay[FIFO_TOTAL_WORDS];
 static int16_t g_az[FIFO_TOTAL_WORDS];
 
 /* FIFO RAW 버퍼: 1회 읽기 분량 (256 * 7 = 1792 Bytes) */
-static uint8_t g_fifo_raw[FIFO_WTM_WORDS * FIFO_BYTES_PER_WORD];
+static uint8_t g_fifo_word[FIFO_BYTES_PER_WORD];
 
 /* CMSIS-DSP 작업 버퍼 */
 static arm_rfft_fast_instance_f32 g_rfft_inst;
@@ -172,10 +171,10 @@ static int lsm6dso_apply_fifo_base(void)
   /* FIFO 설정
    * CTRL10: Timestamp off
    * FIFO_CTRL3: BDR_XL=3.33kHz (0x09)
-   * FIFO_CTRL1/2: WTM=256 (0x100) — WTM[7:0]=0x00, WTM8=1
+   * FIFO_CTRL1/2: WTM=128 (0x080) — WTM[7:0]=0x80, WTM8=0
    *   WTM 필드는 9비트(0~511)이므로 512를 설정하면 0으로 오버플로우됨
-   *   256 word 단위로 4회 읽어 1024 샘플 확보 (방법 B)
-   * FIFO_CTRL4: STOP_ON_WTM=0 (Continuous mode 유지)
+   *   128 word 단위로 8회 읽어 1024 샘플 확보
+   * FIFO_CTRL2: STOP_ON_WTM=0 (Continuous mode 유지)
    */
   RC(wr_u8(REG_CTRL10_C, 0x00));
   RC(wr_u8(REG_FIFO_CTRL3, 0x09));
@@ -188,7 +187,18 @@ static int lsm6dso_apply_fifo_base(void)
 
 static int fifo_set_mode(uint8_t mode)
 {
-  return wr_u8(REG_FIFO_CTRL4, (uint8_t)(mode & 0x07));
+  uint8_t reg = 0;
+
+  RC(rd_u8(REG_FIFO_CTRL4, &reg));
+  reg = (uint8_t)((reg & ~0x07U) | (mode & 0x07U));
+  return wr_u8(REG_FIFO_CTRL4, reg);
+}
+
+static int fifo_read_word(uint8_t *word)
+{
+  uint8_t reg_addr = REG_FIFO_DATA_OUT_TAG;
+  return i2c_write_read(i2c0, LSM6DSO_I2C_ADDR, &reg_addr, 1,
+                        word, FIFO_BYTES_PER_WORD);
 }
 
 static int lsm6dso_prepare_rfft(void)
@@ -291,6 +301,7 @@ static int compute_psd_acc_vel_axis(const int16_t *lsb, uint16_t n,
   uint32_t t_start = now_ms();
   uint32_t t_prev = t_start;
 
+  /* [2 단계] DC 성분(평균값) 제거 */
   float mean_raw = 0.0f;
   for (uint16_t i = 0; i < n; ++i)
   {
@@ -300,20 +311,25 @@ static int compute_psd_acc_vel_axis(const int16_t *lsb, uint16_t n,
 
   for (uint16_t i = 0; i < n; ++i)
   {
+    /* [3 단계] 가속도 단위 변환 [m/s^2] */
     float raw_zeroed = ((float)lsb[i] - offset_lsb) - mean_raw;
     float accel_g = raw_zeroed * sensitivity_g_per_lsb;
     float accel_ms2 = accel_g * G_CONST_MS2;
+
+    /* [4 단계] Hanning Window 적용 */
     g_fft_buffer[i] = accel_ms2 * g_hann_window[i];
   }
 
   log_timing("Band axis: mean/window", t_start, &t_prev);
 
+  /* [5 단계] FFT 수행 및 Magnitude 도출 */
   arm_rfft_fast_f32(&g_rfft_inst, g_fft_buffer, g_fft_output, 0);
   log_timing("Band axis: RFFT", t_start, &t_prev);
 
   arm_cmplx_mag_f32(g_fft_output, g_mag_buffer, FFT_SIZE / 2);
   log_timing("Band axis: magnitude", t_start, &t_prev);
 
+  /* [6 단계] 10~1000Hz 대역 인덱스 설정은 BAND_BIN_START/BAND_BIN_END 매크로 사용 */
   const float df = SAMPLE_RATE_HZ / (float)FFT_SIZE;
   float sum_accel_sq = 0.0f;
   float sum_vel_sq = 0.0f;
@@ -321,16 +337,21 @@ static int compute_psd_acc_vel_axis(const int16_t *lsb, uint16_t n,
   for (int k = BAND_BIN_START; k <= BAND_BIN_END; ++k)
   {
     float freq = (float)k * df;
-    float ak = (g_mag_buffer[k] / (FFT_SIZE / 2.0f)) * HANN_AMPLITUDE_CORRECTION;
+    /* RMS 계산을 위한 Hann 에너지 보정 */
+    float ak = (g_mag_buffer[k] / (FFT_SIZE / 2.0f)) * HANN_RMS_CORRECTION;
 
     if (g_calc_acc)
     {
+      /* [7 단계] 가속도 에너지 누적 */
       sum_accel_sq += ak * ak;
     }
 
     if (g_calc_vel)
     {
+      /* [10 단계] 주파수별 속도 변환 [mm/s] */
       float vk = (ak / (2.0f * (float)M_PI * freq)) * 1000.0f;
+
+      /* [11 단계] 속도 에너지 누적 */
       sum_vel_sq += vk * vk;
     }
   }
@@ -339,7 +360,10 @@ static int compute_psd_acc_vel_axis(const int16_t *lsb, uint16_t n,
 
   if (g_calc_acc)
   {
+    /* [8 단계] 가속도 True RMS 계산 */
     float acc_rms = sqrtf(sum_accel_sq / 2.0f);
+
+    /* [9 단계] 가속도 Equivalent Peak 계산 */
     float acc_eq_peak = acc_rms * EQ_PEAK_FACTOR;
     *acc_rms_x100 = MS2_X100(acc_rms);
     *acc_peak_x100 = MS2_X100(acc_eq_peak);
@@ -352,7 +376,10 @@ static int compute_psd_acc_vel_axis(const int16_t *lsb, uint16_t n,
 
   if (g_calc_vel)
   {
+    /* [12 단계] 속도 True RMS 계산 */
     float vel_rms = sqrtf(sum_vel_sq / 2.0f);
+
+    /* [13 단계] 속도 Equivalent Peak 계산 */
     float vel_eq_peak = vel_rms * EQ_PEAK_FACTOR;
     *vel_rms_mmps_x100 = MMPS_X100(vel_rms);
     *vel_peak_mmps_x100 = MMPS_X100(vel_eq_peak);
@@ -372,7 +399,7 @@ static int compute_psd_acc_vel_axis(const int16_t *lsb, uint16_t n,
  *
  * @details
  * FIFO를 BYPASS -> CONTINUOUS로 전환한 뒤 Active Polling으로
- * 256샘플씩 4회 읽어서 총 1024샘플을 수집한다 (방법 B: WTM=256 < FIFO 최대).
+ * 128샘플씩 8회 읽어서 총 1024샘플을 수집한다.
  *
  * 1. WHO_AM_I, FS, FIFO 기본 설정을 적용한다.
  * 2. FIFO watermark(WTM_IA) 또는 DIFF_FIFO >= WTM 조건을 Busy Wait으로 감시한다.
@@ -421,7 +448,7 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t scale)
   RC(fifo_set_mode(FIFO_MODE_CONTINUOUS));
   log_timing("fifo continuous start", t_start, &t_prev);
 
-  /* 1024개 샘플 수집 (256 * 4 chunks, WTM=256) */
+  /* 1024개 샘플 수집 (128 * 8 chunks, WTM=128) */
   uint16_t total_parsed = 0;
 
   for (int chunk = 0; chunk < FIFO_CAPTURE_CHUNKS; ++chunk)
@@ -430,7 +457,7 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t scale)
     bool ready = false;
 
     /* 조건: WTM 플래그(FIFO_STATUS2 bit7) == 1 or DIFF >= WTM_WORDS
-     * Timeout : 256샘플 @ 3.33kHz = 약 77ms, 여유 포함 250ms
+     * Timeout : 128샘플 @ 3.33kHz = 약 39ms, 여유 포함 250ms
      * DIFF_FIFO[9:8]는 FIFO_STATUS2 bit[1:0]에 위치 → 마스크 0x03
      */
     while ((now_ms() - chunk_wait_start) < 250)
@@ -469,26 +496,22 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t scale)
 
     log_timing("chunk wait WTM", t_start, &t_prev);
 
-    uint8_t reg_addr = REG_FIFO_DATA_OUT_TAG;
-    if (i2c_write_read(i2c0, LSM6DSO_I2C_ADDR, &reg_addr, 1,
-                       g_fifo_raw, sizeof(g_fifo_raw)) != 0)
-    {
-      LOG_ERR("FIFO read fail at chunk %d", chunk);
-      return -EIO;
-    }
-
-    log_timing("chunk burst read", t_start, &t_prev);
-
     /* FIFO 구조: Tag(1) + X(2) + Y(2) + Z(2) = 7 Bytes */
     uint16_t base_idx = (uint16_t)(chunk * FIFO_WTM_WORDS);
     uint16_t acc_valid_count = 0;
     uint16_t non_acc_count = 0;
 
-    for (size_t i = 0; i < sizeof(g_fifo_raw); i += FIFO_BYTES_PER_WORD)
+    for (uint16_t word = 0; word < FIFO_WTM_WORDS; ++word)
     {
+      if (fifo_read_word(g_fifo_word) != 0)
+      {
+        LOG_ERR("FIFO read fail at chunk %d word %u",
+                chunk, (unsigned)word);
+        return -EIO;
+      }
       /* TAG_SENSOR[4:0] 추출 (DS Table 165): 0x02 = Accelerometer NC
        * 0x01은 Gyroscope NC이므로 허용하지 않는다 */
-      uint8_t tag_val = (uint8_t)((g_fifo_raw[i] >> 3) & 0x1F);
+      uint8_t tag_val = (uint8_t)((g_fifo_word[0] >> 3) & 0x1F);
       if (tag_val != 0x02)
       {
         non_acc_count++;
@@ -501,12 +524,12 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t scale)
         return -EIO;
       }
 
-      int16_t x = (int16_t)((uint16_t)g_fifo_raw[i + 1] |
-                            ((uint16_t)g_fifo_raw[i + 2] << 8));
-      int16_t y = (int16_t)((uint16_t)g_fifo_raw[i + 3] |
-                            ((uint16_t)g_fifo_raw[i + 4] << 8));
-      int16_t z = (int16_t)((uint16_t)g_fifo_raw[i + 5] |
-                            ((uint16_t)g_fifo_raw[i + 6] << 8));
+      int16_t x = (int16_t)((uint16_t)g_fifo_word[1] |
+                            ((uint16_t)g_fifo_word[2] << 8));
+      int16_t y = (int16_t)((uint16_t)g_fifo_word[3] |
+                            ((uint16_t)g_fifo_word[4] << 8));
+      int16_t z = (int16_t)((uint16_t)g_fifo_word[5] |
+                            ((uint16_t)g_fifo_word[6] << 8));
 
       g_ax[base_idx + acc_valid_count] = x;
       g_ay[base_idx + acc_valid_count] = y;
@@ -529,7 +552,7 @@ int lsm6dso_capture_once(lsm6dso_stats_t *out, lsm6dso_scale_t scale)
     }
 
     total_parsed += acc_valid_count;
-    log_timing("chunk parse", t_start, &t_prev);
+    log_timing("chunk read/parse", t_start, &t_prev);
   }
 
   out->n = total_parsed;

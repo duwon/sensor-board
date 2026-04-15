@@ -5,7 +5,7 @@
 #include "wdt.h"
 
 /* Sleep 최대 30초 + 여유 30초 = 60초 타임아웃 */
-#define WDT_TIMEOUT_MS  33000
+#define WDT_TIMEOUT_MS  35000
 
 static const struct device *wdt_dev;
 static int wdt_channel = -1;

@@ -241,7 +241,7 @@ int err;
 //		.secondary_max_phy  = BT_GAP_LE_PHY_1M, 
 //      .secondary_min_phy  = BT_GAP_LE_PHY_1M,		
         .options          = BT_LE_ADV_OPT_EXT_ADV |
-                            BT_LE_ADV_OPT_CONNECTABLE |
+                            BT_LE_ADV_OPT_CONN |
                             BT_LE_ADV_OPT_USE_IDENTITY | BT_LE_ADV_OPT_NO_2M,
         .interval_min     = (phy == 1) ?
                               ADV_INT_MIN :
