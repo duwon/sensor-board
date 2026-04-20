@@ -730,6 +730,7 @@ static int cmd_xgzp_read(const struct shell *sh, size_t argc, char **argv)
 {
     float p_pa = 0.0f;
     float t_c = 0.0f;
+    const char *sensor_name = "XGZP";
 
     // int ret = xgzp6897_read_measurement(XGZP6897_RANGE_010K, &p_pa, &t_c);
     int ret = 0;
@@ -737,6 +738,7 @@ static int cmd_xgzp_read(const struct shell *sh, size_t argc, char **argv)
     if (strcmp(argv[0], "p1") == 0)
     {
         /* Calibaration 적용 */
+        sensor_name = "XGZP6897D";
         if (argc >= 2 && strcmp(argv[1], "offset") == 0)
         {
             set_calibration_xgzp6897(XGZP6897_RANGE_001K);
@@ -748,6 +750,7 @@ static int cmd_xgzp_read(const struct shell *sh, size_t argc, char **argv)
     }
     else if (strcmp(argv[0], "p2") == 0)
     {
+        sensor_name = "XGZP6897D";
         if (argc >= 2 && strcmp(argv[1], "offset") == 0)
         {
             set_calibration_xgzp6897(XGZP6897_RANGE_010K);
@@ -760,6 +763,7 @@ static int cmd_xgzp_read(const struct shell *sh, size_t argc, char **argv)
     else if (strcmp(argv[0], "p3") == 0)
     {
         /* Calibaration 적용 */
+        sensor_name = "XGZP6847D";
         if (argc >= 2 && strcmp(argv[1], "offset") == 0)
         {
             set_calibration_xgzp6847(XGZP6847_RANGE_001MPGPN);
@@ -772,12 +776,20 @@ static int cmd_xgzp_read(const struct shell *sh, size_t argc, char **argv)
 
     if (ret == 0)
     {
-        float p_mmH2O = p_pa / 9.80665f; /* 필요 시 mmH2O로 변환 */
-        LOG_INF("XGZP6897D: P = %.3f Pa (%.3f mmH2O), T = %.2f C", (double)p_pa, (double)p_mmH2O, (double)t_c);
+        if (strcmp(argv[0], "p3") == 0)
+        {
+            float p_bar = p_pa / 100000.0f;
+            LOG_INF("%s: P = %.3f Pa (%.3f bar), T = %.2f C", sensor_name, (double)p_pa, (double)p_bar, (double)t_c);
+        }
+        else
+        {
+            float p_mmH2O = p_pa / 9.80665f; /* 필요 시 mmH2O로 변환 */
+            LOG_INF("%s: P = %.3f Pa (%.3f mmH2O), T = %.2f C", sensor_name, (double)p_pa, (double)p_mmH2O, (double)t_c);
+        }
     }
     else
     {
-        LOG_ERR("XGZP6897D read failed, err=%d", ret);
+        LOG_ERR("%s read failed, err=%d", sensor_name, ret);
     }
 
     return ret;
@@ -847,7 +859,7 @@ static int cmd_sensor_read(const struct shell *sh, size_t argc, char **argv)
 
     if (argc == 1)
     {
-        shell_print(sh, "diag p <id>  // Read pressure (mmH2O x100)");
+        shell_print(sh, "diag p <id>  // Read pressure (x100; unit depends on sensor)");
         shell_print(sh, "diag p cal <id>  // Calibrate sensor (zero offset)");
         for (size_t i = 0; i < list_cnt; ++i)
         {
@@ -899,6 +911,7 @@ static int cmd_sensor_read(const struct shell *sh, size_t argc, char **argv)
     /* 센서 정보 */
     const char *pname = "unknown";
     const char *prange = "";
+    const char *unit = "mmH2O";
     for (size_t i = 0; i < list_cnt; ++i)
     {
         if (list[i].id == (uint8_t)id)
@@ -909,9 +922,20 @@ static int cmd_sensor_read(const struct shell *sh, size_t argc, char **argv)
         }
     }
 
+    switch ((uint8_t)id)
+    {
+    case SENSOR_ID_PRESSURE_AIR_HEADER_SSCDJNN010BA:
+    case SENSOR_ID_PRESSURE_AIR_HEADER_XGZP6847_001MP:
+        unit = "bar";
+        break;
+    default:
+        unit = "mmH2O";
+        break;
+    }
+
     /* 출력 */
     int32_t abs_x100 = (v_x100 < 0) ? -v_x100 : v_x100;
-    shell_print(sh, "id=%d part=%s (%s): %s%ld.%02ld mmH2O  (%ld x100)", id, pname, prange, (v_x100 < 0) ? "-" : "", (long)(abs_x100 / 100), (long)(abs_x100 % 100), (long)v_x100);
+    shell_print(sh, "id=%d part=%s (%s): %s%ld.%02ld %s  (%ld x100)", id, pname, prange, (v_x100 < 0) ? "-" : "", (long)(abs_x100 / 100), (long)(abs_x100 % 100), unit, (long)v_x100);
 
     return 0;
 }
@@ -929,7 +953,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_diag,
                                SHELL_CMD(bat, &sub_bat, "LTC3337 battery gauge", NULL),
                                SHELL_CMD(p1, NULL, "XGZP6897D001KPDPN (0x58) Read", cmd_xgzp_read),
                                SHELL_CMD(p2, NULL, "XGZP6897D100KPDPN (0x58) Read", cmd_xgzp_read),
-                               SHELL_CMD(p3, NULL, "XGZP6847DC001MPGPN (0x6D) Read", cmd_xgzp_read),
+                               SHELL_CMD(p3, NULL, "XGZP6847DC001MPGPN (0x58) Read", cmd_xgzp_read),
                                SHELL_CMD(p4, NULL, "SSCDJNN010BA2A3 (0x28) Read", cmd_ssc_read),
                                SHELL_CMD(p5, NULL, "SSCDJNN100MD2A3 (0x28) Read", cmd_ssc_read),
                                SHELL_CMD(p6, NULL, "SSCDJNN002ND2A3 (0x28) Read", cmd_ssc_read),

@@ -42,8 +42,8 @@ LOG_MODULE_REGISTER(xgzp6847d, LOG_LEVEL_INF);
 #define XGZP6847_SUM_DIVISOR 2097152.0f        /* 2^21 */
 
 /* 현재 사용 모델: XGZP6847DC001MPGPN (0 ~ 1 MPa 게이지, 데이터시트 001MPGPN) */
-#define XGZP6847_PMIN_PA_001MPGPN (0.0f)        /* 0 MPa gauge */
-#define XGZP6847_PMAX_PA_001MPGPN (1000000.0f)  /* 1 MPa (1000 kPa) */
+#define XGZP6847_PMIN_PA_001MPGPN (-100000.0f)  /* -100 kPa gauge */
+#define XGZP6847_PMAX_PA_001MPGPN (1000000.0f)  /* 1000 kPa gauge */
 
 /** @brief 사용 I2C 컨트롤러 (보드 오버레이 기준 i2c0 사용 가정) */
 static const struct device *i2c0_dev = DEVICE_DT_GET(DT_NODELABEL(i2c0));
@@ -280,7 +280,7 @@ int xgzp6847_read_measurement(xgzp6847_range_t range_type, float *pressure_pa, f
     }
 
     /* 2) 변환 완료까지 대기 (보수적으로 5ms) */
-    k_msleep(3);
+    k_msleep(5);
 
     /* 3) 압력 계산: pressure_pa != NULL 일 때만 0x04~0x06 읽기 */
     if (pressure_pa != NULL)
